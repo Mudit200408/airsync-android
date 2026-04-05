@@ -653,20 +653,19 @@ object WebSocketUtil {
             try {
                 val ds = com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
 
-                // Monitor discovered devices
-                UDPDiscoveryManager.discoveredDevices.collect { discoveredList ->
-                    if (!autoReconnectActive.get() || isConnected.get() || isConnecting.get()) return@collect
+                // Helper: try to connect to the last device if it shows up in discoveredList.
+                suspend fun tryConnectIfAvailable(discoveredList: List<DiscoveredDevice>) {
+                    if (!autoReconnectActive.get() || isConnected.get() || isConnecting.get()) return
 
                     val manual = ds.getUserManuallyDisconnected().first()
                     val autoEnabled = ds.getAutoReconnectEnabled().first()
                     if (manual || !autoEnabled) {
                         cancelAutoReconnect()
-                        return@collect
+                        return
                     }
 
-                    val last = ds.getLastConnectedDevice().first() ?: return@collect
-                    DeviceInfoUtil.getWifiIpAddress(context)
-                        ?: return@collect
+                    val last = ds.getLastConnectedDevice().first() ?: return
+                    DeviceInfoUtil.getWifiIpAddress(context) ?: return
 
                     // Match by name within the discovery list
                     val discoveryMatch = discoveredList.find { it.name == last.name }
@@ -710,6 +709,16 @@ object WebSocketUtil {
                             )
                         }
                     }
+                }
+
+                // Immediately check the current list — StateFlow.collect() only fires on NEW
+                // emissions, so if the target Mac was already discovered before we subscribed
+                // (e.g., we just closed and re-opened the app) we would miss it.
+                tryConnectIfAvailable(UDPDiscoveryManager.discoveredDevices.value)
+
+                // Then keep watching for future updates (Mac beacons arriving while we listen)
+                UDPDiscoveryManager.discoveredDevices.collect { discoveredList ->
+                    tryConnectIfAvailable(discoveredList)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in discovery auto-reconnect: ${e.message}")

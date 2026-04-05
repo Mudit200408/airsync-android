@@ -24,7 +24,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -87,11 +89,19 @@ class AirSyncService : Service() {
             dataStoreManager.getDeviceDiscoveryEnabled().first()
         }
 
-        // Default to PASSIVE mode to save battery
-        // But do a burst to check for devices immediately
+        // Start in ACTIVE mode briefly so we announce ourselves immediately after a disconnect.
+        // After 60 seconds, fall back to battery-friendly PASSIVE mode.
         UDPDiscoveryManager.start(this, isDiscoveryEnabled)
-        UDPDiscoveryManager.setDiscoveryMode(this, DiscoveryMode.PASSIVE)
+        UDPDiscoveryManager.setDiscoveryMode(this, DiscoveryMode.ACTIVE)
         UDPDiscoveryManager.burstBroadcast(this)
+
+        scope.launch {
+            delay(60_000L)
+            if (isScanning) {
+                Log.d(TAG, "Switching from ACTIVE to PASSIVE discovery after 60s")
+                UDPDiscoveryManager.setDiscoveryMode(applicationContext, DiscoveryMode.PASSIVE)
+            }
+        }
 
         // Start WakeupService for HTTP wakeups
         WakeupService.startService(this)
