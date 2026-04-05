@@ -174,7 +174,8 @@
         <!-- Wake-up Service for receiving reconnection requests from Mac -->
         <service
             android:name=".service.WakeupService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <!-- AirSync Service - maintains connection to Mac and handles call monitoring -->
         <service

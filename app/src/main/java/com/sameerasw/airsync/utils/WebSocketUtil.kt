@@ -186,6 +186,7 @@ object WebSocketUtil {
                         isConnecting.set(false)
                         onConnectionStatusChanged?.invoke(false)
                         notifyConnectionStatusListeners(false)
+                        tryStartAutoReconnect(context)
                         try {
                             AirSyncWidgetProvider.updateAllWidgets(context)
                         } catch (_: Exception) {
@@ -402,10 +403,10 @@ object WebSocketUtil {
                                 val totalToTry = ipList.size
                                 val failedCount = failedAttempts.incrementAndGet()
                                 val wasActive = webSocket == WebSocketUtil.webSocket
-                                val isFinalManualAttempt = manualAttempt && !connectionStarted.get() && failedCount >= totalToTry
+                                val isFinalAttempt = !connectionStarted.get() && failedCount >= totalToTry
 
-                                if (wasActive || isFinalManualAttempt) {
-                                    if (manualAttempt || isSocketOpen.get()) {
+                                if (wasActive || isFinalAttempt) {
+                                    if (manualAttempt && (!isSocketOpen.get() || wasActive)) {
                                         if (com.sameerasw.airsync.AirSyncApp.isAppForeground()) {
                                             CoroutineScope(Dispatchers.Main).launch {
                                                 val msg = when (t) {
@@ -437,7 +438,6 @@ object WebSocketUtil {
                                     }
                                     onConnectionStatusChanged?.invoke(false)
                                     notifyConnectionStatusListeners(false)
-                                    
                                     // Check manual disconnect flag before auto-reconnecting on failure
                                     CoroutineScope(Dispatchers.IO).launch {
                                         try {
@@ -715,13 +715,13 @@ object WebSocketUtil {
                 val ds = com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
                 acquireWifiLock(context)
 
-                // 1.  Retry Loop (Try last known IPs immediately and periodically)
+                // 1. Retry Loop (Try last known IPs with exponential backoff)
                 launch {
                     var backoffMs = 2000L
                     while (autoReconnectActive.get() && !isConnected.get()) {
                         val manual = ds.getUserManuallyDisconnected().first()
                         val autoEnabled = ds.getAutoReconnectEnabled().first()
-                        
+
                         if (manual || !autoEnabled) {
                             Log.d(TAG, "Auto-reconnect cancelled: manual=$manual, enabled=$autoEnabled")
                             cancelAutoReconnect()
@@ -731,48 +731,76 @@ object WebSocketUtil {
                         if (!isConnecting.get()) {
                             val last = ds.getLastConnectedDevice().first()
                             if (last != null) {
+                                val ourIp = DeviceInfoUtil.getWifiIpAddress(context) ?: "Unknown"
                                 val all = ds.getAllNetworkDeviceConnections().first()
                                 val targetConnection = all.firstOrNull { it.deviceName == last.name }
-                                
-                                if (targetConnection != null) {
-                                    val ips = targetConnection.networkConnections.values.joinToString(",")
-                                    val port = targetConnection.port.toIntOrNull() ?: 6996
-                                    
-                                    Log.d(TAG, "Proactive retry to $ips:$port (backoff: ${backoffMs}ms)")
+
+                                val targetIps = if (targetConnection != null && ourIp != "Unknown") {
+                                    targetConnection.getClientIpForNetwork(ourIp) ?: last.ipAddress
+                                } else {
+                                    targetConnection?.networkConnections?.values?.joinToString(",") ?: last.ipAddress
+                                }
+
+                                if (targetIps.isNotEmpty()) {
+                                    Log.d(TAG, "Proactive retry to $targetIps (backoff: ${backoffMs}ms)")
                                     connect(
                                         context = context,
-                                        ipAddress = ips,
-                                        port = port,
-                                        symmetricKey = targetConnection.symmetricKey,
+                                        ipAddress = targetIps,
+                                        port = targetConnection?.port?.toIntOrNull() ?: last.port.toIntOrNull() ?: 6996,
+                                        symmetricKey = targetConnection?.symmetricKey ?: last.symmetricKey,
                                         manualAttempt = false,
                                         onConnectionStatus = { connected ->
                                             if (connected) {
-                                                releaseWifiLock()
-                                                cancelAutoReconnect()
+                                                CoroutineScope(Dispatchers.IO).launch {
+                                                    try {
+                                                        if (targetConnection != null) {
+                                                            ds.updateNetworkDeviceLastConnected(
+                                                                targetConnection.deviceName,
+                                                                System.currentTimeMillis()
+                                                            )
+                                                        }
+                                                    } catch (_: Exception) {}
+                                                    releaseWifiLock()
+                                                    cancelAutoReconnect()
+                                                }
                                             }
                                         }
                                     )
                                 }
                             }
                         }
-                        
+
                         delay(backoffMs)
                         // Exponential backoff capped at 1 minute
                         backoffMs = (backoffMs * 2).coerceAtMost(60_000L)
                     }
                 }
 
-                // 2. Discovery Monitoring (Listen for presence packets in case IP changed)
-                UDPDiscoveryManager.discoveredDevices.collect { discoveredList ->
-                    if (!autoReconnectActive.get() || isConnected.get() || isConnecting.get()) return@collect
+                // 2. Discovery Listener (Listen for presence packets in case IP changed)
+                suspend fun tryConnectIfAvailable(discoveredList: List<DiscoveredDevice>) {
+                    if (!autoReconnectActive.get() || isConnected.get() || isConnecting.get()) return
 
-                    val last = ds.getLastConnectedDevice().first() ?: return@collect
-                    
-                    // Match by name within the discovery list
+                    val manual = ds.getUserManuallyDisconnected().first()
+                    val autoEnabled = ds.getAutoReconnectEnabled().first()
+                    if (manual || !autoEnabled) {
+                        cancelAutoReconnect()
+                        return
+                    }
+
+                    val last = ds.getLastConnectedDevice().first() ?: return
+
+                    // Check if we have ANY network available (WiFi, VPN, or Cellular)
+                    val networkStatus = DeviceInfoUtil.getNetworkStatus(context)
+                    val hasNetwork = networkStatus.isConnected
+
+                    if (!hasNetwork) {
+                        Log.d(TAG, "No network available, skipping auto-reconnect")
+                        return
+                    }
+
+                    // Try discovered devices first
                     val discoveryMatch = discoveredList.find { it.name == last.name }
                     if (discoveryMatch != null) {
-                        Log.d(TAG, "Discovery-triggered reconnect for: ${discoveryMatch.name}")
-
                         val all = ds.getAllNetworkDeviceConnections().first()
                         val targetConnection = all.firstOrNull { it.deviceName == last.name }
 
@@ -780,6 +808,7 @@ object WebSocketUtil {
                             val ips = discoveryMatch.ips.joinToString(",")
                             val port = targetConnection.port.toIntOrNull() ?: 6996
 
+                            Log.d(TAG, "Discovery-triggered reconnect for: ${discoveryMatch.name} to $ips:$port (strategy: ${networkStatus.networkType})")
                             connect(
                                 context = context,
                                 ipAddress = ips,
@@ -788,14 +817,30 @@ object WebSocketUtil {
                                 manualAttempt = false,
                                 onConnectionStatus = { connected ->
                                     if (connected) {
-                                        releaseWifiLock()
-                                        cancelAutoReconnect()
+                                        CoroutineScope(Dispatchers.IO).launch {
+                                            try {
+                                                ds.updateNetworkDeviceLastConnected(
+                                                    targetConnection.deviceName,
+                                                    System.currentTimeMillis()
+                                                )
+                                            } catch (_: Exception) {}
+                                            releaseWifiLock()
+                                            cancelAutoReconnect()
+                                        }
                                     }
                                 }
                             )
                         }
                     }
                 }
+
+                tryConnectIfAvailable(UDPDiscoveryManager.discoveredDevices.value)
+                UDPDiscoveryManager.discoveredDevices.collect { discoveredList ->
+                    if (!autoReconnectActive.get()) return@collect
+                    tryConnectIfAvailable(discoveredList)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Coroutine was cancelled - this is normal, not an error
             } catch (e: Exception) {
                 Log.e(TAG, "Error in smart auto-reconnect: ${e.message}")
                 releaseWifiLock()
@@ -803,9 +848,7 @@ object WebSocketUtil {
         }
     }
 
-    // Public wrapper to request auto-reconnect from app logic (e.g., network changes)
     fun requestAutoReconnect(context: Context) {
-        // Only if not already connected or connecting
         if (isConnected.get() || isConnecting.get()) return
         tryStartAutoReconnect(context)
     }
