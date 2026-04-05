@@ -198,12 +198,21 @@ object UDPDiscoveryManager {
                     if (deviceType == "mac") {
                         handlePresenceMessage(context, json, sourceIp)
 
-                        // Optimization: If we receive a presence packet in PASSIVE mode, 
-                        // we might want to respond once so the Mac knows we are here,
-                        // essentially performing a "lazy handshake"
+                        // Lazy-handshake: when in PASSIVE mode and we see a Mac presence beacon,
+                        // respond with a single unicast so the Mac knows we're alive.
+                        // This is battery-friendly (no loop, no timer) and is the primary
+                        // mechanism that makes the Mac auto-discover the Android when the
+                        // AirSync app is in the background.
                         if (currentMode == DiscoveryMode.PASSIVE && isDiscoveryEnabled) {
-                            CoroutineScope(Dispatchers.IO).launch {
-                                // broadcastPresence(context) // Optional: avoid if we want to be truly silent
+                            val macIp = sourceIp ?: run {
+                                val ipsArray = json.optJSONArray("ips")
+                                if (ipsArray != null && ipsArray.length() > 0) ipsArray.getString(0)
+                                else json.optString("ip").takeIf { it.isNotEmpty() }
+                            }
+                            if (macIp != null) {
+                                CoroutineScope(Dispatchers.IO).launch {
+                                    sendPresenceUnicast(context, macIp)
+                                }
                             }
                         }
                     }
@@ -446,6 +455,44 @@ object UDPDiscoveryManager {
             }
         } catch (e: Exception) {
             // Log.d(TAG, "Unicast failed to $targetIp: ${e.message}")
+        }
+    }
+
+    /**
+     * Send a single unicast presence packet to a specific IP (e.g., the Mac that just pinged us).
+     * Used in PASSIVE mode as a lazy-handshake so the Mac becomes aware we are reachable.
+     */
+    private fun sendPresenceUnicast(context: Context, targetIp: String) {
+        try {
+            val allIps = getAllIpAddresses()
+            if (allIps.isEmpty()) return
+
+            val ds = com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
+            val customName = try {
+                runBlocking { ds.getDeviceName().first() }
+            } catch (e: Exception) { "" }
+
+            val deviceName = if (customName.isNotBlank()) customName else android.os.Build.MODEL
+            val expandNetworkingEnabled = try {
+                runBlocking { ds.getExpandNetworkingEnabled().first() }
+            } catch (e: Exception) { false }
+
+            val filteredIps = if (expandNetworkingEnabled) allIps else allIps.filter { !it.startsWith("100.") }
+            if (filteredIps.isEmpty()) return
+
+            val deviceId = DeviceInfoUtil.getDeviceId(context)
+            val json = JSONObject()
+            json.put("type", "presence")
+            json.put("deviceType", "android")
+            json.put("id", deviceId)
+            json.put("name", deviceName)
+            json.put("ips", FilteredIpArray(filteredIps))
+            val payload = json.toString()
+
+            sendUnicast(targetIp, payload)
+            Log.d(TAG, "Lazy-handshake: sent presence unicast to $targetIp")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send presence unicast: ${e.message}")
         }
     }
 
