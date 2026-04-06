@@ -1,16 +1,10 @@
 package com.sameerasw.airsync.service
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.IBinder
 import android.util.Log
-import androidx.core.app.NotificationCompat
-import com.sameerasw.airsync.R
 import com.sameerasw.airsync.utils.WakeupHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,16 +29,10 @@ class WakeupService : Service() {
         private const val TAG = "WakeupService"
         private const val HTTP_PORT = 8888 // HTTP server port
         private const val WAKEUP_ENDPOINT = "/wakeup"
-        private const val CHANNEL_ID = "airsync_connection_channel" // Reuse existing channel
-        private const val NOTIFICATION_ID = 4002
 
         fun startService(context: Context) {
             val intent = Intent(context, WakeupService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            context.startService(intent)
         }
 
         fun stopService(context: Context) {
@@ -61,13 +49,10 @@ class WakeupService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
         Log.d(TAG, "WakeupService created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Promote to foreground immediately so Android 8+ does not kill us in the background.
-        startForeground(NOTIFICATION_ID, buildNotification())
         if (!isRunning) {
             startWakeupListeners()
         }
@@ -75,40 +60,10 @@ class WakeupService : Service() {
     }
 
     override fun onDestroy() {
-        stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
         stopWakeupListeners()
         serviceScope.cancel()
         Log.d(TAG, "WakeupService destroyed")
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val nm = getSystemService(NotificationManager::class.java)
-            if (nm?.getNotificationChannel(CHANNEL_ID) == null) {
-                val channel = NotificationChannel(
-                    CHANNEL_ID,
-                    "AirSync Status",
-                    NotificationManager.IMPORTANCE_MIN
-                ).apply {
-                    description = "Shows AirSync connection and discovery status"
-                    setShowBadge(false)
-                }
-                nm?.createNotificationChannel(channel)
-            }
-        }
-    }
-
-    private fun buildNotification(): Notification {
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_laptop_24)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText("Waiting for Mac connection…")
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .setOngoing(true)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
-            .build()
     }
 
     private fun startWakeupListeners() {
