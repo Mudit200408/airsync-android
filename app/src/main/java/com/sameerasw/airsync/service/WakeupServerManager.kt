@@ -1,9 +1,6 @@
 package com.sameerasw.airsync.service
 
-import android.app.Service
 import android.content.Context
-import android.content.Intent
-import android.os.IBinder
 import android.util.Log
 import com.sameerasw.airsync.utils.WakeupHandler
 import kotlinx.coroutines.CoroutineScope
@@ -19,72 +16,38 @@ import java.io.PrintWriter
 import java.net.ServerSocket
 import java.net.Socket
 
-/**
- * Service that runs a lightweight HTTP server
- * to receive wake-up requests from Mac clients for initiating reconnection.
- * UDP wake-up requests are now handled by UDPDiscoveryManager to avoid port conflicts.
- */
-class WakeupService : Service() {
-    companion object {
-        private const val TAG = "WakeupService"
-        private const val HTTP_PORT = 8888 // HTTP server port
-        private const val WAKEUP_ENDPOINT = "/wakeup"
-
-        fun startService(context: Context) {
-            val intent = Intent(context, WakeupService::class.java)
-            context.startService(intent)
-        }
-
-        fun stopService(context: Context) {
-            val intent = Intent(context, WakeupService::class.java)
-            context.stopService(intent)
-        }
-    }
+object WakeupServerManager {
+    private const val TAG = "WakeupServerManager"
+    private const val HTTP_PORT = 8888
+    private const val WAKEUP_ENDPOINT = "/wakeup"
 
     private var httpServerSocket: ServerSocket? = null
-    private var serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var serviceScope: CoroutineScope? = null
     private var isRunning = false
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    @Synchronized
+    fun start(context: Context) {
+        if (isRunning) return
 
-    override fun onCreate() {
-        super.onCreate()
-        Log.d(TAG, "WakeupService created")
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!isRunning) {
-            startWakeupListeners()
-        }
-        return START_STICKY // Restart if killed
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        stopWakeupListeners()
-        serviceScope.cancel()
-        Log.d(TAG, "WakeupService destroyed")
-    }
-
-    private fun startWakeupListeners() {
-        serviceScope.launch {
-            try {
-                isRunning = true
-
-                // Start HTTP server
-                startHttpServer()
-
-                Log.i(TAG, "Wake-up HTTP listener started on port $HTTP_PORT")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start wake-up listeners", e)
+        val appContext = context.applicationContext
+        serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob()).also { scope ->
+            scope.launch {
+                try {
+                    isRunning = true
+                    startHttpServer(appContext, scope)
+                    Log.i(TAG, "Wake-up HTTP listener started on port $HTTP_PORT")
+                } catch (e: Exception) {
+                    isRunning = false
+                    Log.e(TAG, "Failed to start wake-up listener", e)
+                }
             }
         }
     }
 
-    private fun stopWakeupListeners() {
+    @Synchronized
+    fun stop() {
         isRunning = false
 
-        // Stop HTTP server
         try {
             httpServerSocket?.close()
         } catch (e: Exception) {
@@ -92,22 +55,24 @@ class WakeupService : Service() {
         }
         httpServerSocket = null
 
-        Log.i(TAG, "Wake-up HTTP server stopped")
+        serviceScope?.cancel()
+        serviceScope = null
+
+        Log.i(TAG, "Wake-up HTTP listener stopped")
     }
 
-    private suspend fun startHttpServer() {
+    private suspend fun startHttpServer(context: Context, scope: CoroutineScope) {
         withContext(Dispatchers.IO) {
             try {
                 httpServerSocket = ServerSocket(HTTP_PORT)
 
-                serviceScope.launch {
+                scope.launch {
                     while (isRunning && httpServerSocket?.isClosed == false) {
                         try {
                             val clientSocket = httpServerSocket?.accept()
                             if (clientSocket != null) {
-                                // Handle client connection in a separate coroutine
                                 launch {
-                                    handleHttpRequest(clientSocket)
+                                    handleHttpRequest(context, clientSocket)
                                 }
                             }
                         } catch (e: Exception) {
@@ -121,40 +86,36 @@ class WakeupService : Service() {
                 Log.d(TAG, "HTTP server started on port $HTTP_PORT")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start HTTP server", e)
+                throw e
             }
         }
     }
 
-    private suspend fun handleHttpRequest(clientSocket: Socket) {
+    private suspend fun handleHttpRequest(context: Context, clientSocket: Socket) {
         withContext(Dispatchers.IO) {
             try {
                 clientSocket.use { socket ->
                     val input = BufferedReader(InputStreamReader(socket.getInputStream()))
                     val output = PrintWriter(socket.getOutputStream(), true)
 
-                    // Read HTTP request line
-                    val requestLine = input.readLine()
-                    if (requestLine == null) return@withContext
-
+                    val requestLine = input.readLine() ?: return@withContext
                     val parts = requestLine.split(" ")
                     if (parts.size < 3) return@withContext
 
                     val method = parts[0]
                     val path = parts[1]
 
-                    // Read headers to find Content-Length
                     var contentLength = 0
                     var line: String?
                     while (input.readLine().also { line = it } != null) {
-                        if (line!!.isEmpty()) break // End of headers
-                        if (line.lowercase().startsWith("content-length:")) {
-                            contentLength = line.substring(15).trim().toIntOrNull() ?: 0
+                        val headerLine = line ?: break
+                        if (headerLine.isEmpty()) break
+                        if (headerLine.lowercase().startsWith("content-length:")) {
+                            contentLength = headerLine.substring(15).trim().toIntOrNull() ?: 0
                         }
                     }
 
-                    // Handle wake-up request
                     if (method == "POST" && path == WAKEUP_ENDPOINT) {
-                        // Read request body
                         val body = if (contentLength > 0) {
                             val bodyChars = CharArray(contentLength)
                             input.read(bodyChars, 0, contentLength)
@@ -165,53 +126,37 @@ class WakeupService : Service() {
 
                         Log.d(TAG, "Received HTTP wake-up request: $body")
 
-                        // Parse the wake-up request
                         try {
                             val jsonRequest = JSONObject(body)
 
-                            // Handle nested JSON structure from Mac
                             val macIp: String
                             val macPort: Int
                             val macName: String
 
                             if (jsonRequest.has("data")) {
-                                // Mac sends nested format: {"type": "wakeUpRequest", "data": {...}}
                                 val data = jsonRequest.getJSONObject("data")
-                                macIp = data.optString(
-                                    "macIP",
-                                    ""
-                                ) // Note: Mac uses "macIP" not "macIp"
+                                macIp = data.optString("macIP", "")
                                 macPort = data.optInt("macPort", 6996)
                                 macName = data.optString("macName", "Mac")
                             } else {
-                                // Fallback to flat structure
                                 macIp = jsonRequest.optString("macIp", "")
                                 macPort = jsonRequest.optInt("macPort", 6996)
                                 macName = jsonRequest.optString("macName", "Mac")
                             }
 
-                            // Send success response
                             val response =
                                 """{"status": "success", "message": "Wake-up request received"}"""
                             sendHttpResponse(output, 200, "OK", response)
 
-                            // Process the wake-up request using centralized handler
-                            WakeupHandler.processWakeupRequest(
-                                this@WakeupService,
-                                macIp,
-                                macPort,
-                                macName
-                            )
+                            WakeupHandler.processWakeupRequest(context, macIp, macPort, macName)
                         } catch (e: Exception) {
                             Log.e(TAG, "Error parsing wake-up request", e)
                             val response = """{"status": "error", "message": "Invalid JSON"}"""
                             sendHttpResponse(output, 400, "Bad Request", response)
                         }
                     } else if (method == "OPTIONS") {
-                        // Handle CORS preflight
                         sendCorsResponse(output)
                     } else {
-                        // Method not allowed or path not found
                         val response =
                             """{"status": "error", "message": "Method not allowed or path not found"}"""
                         sendHttpResponse(output, 405, "Method Not Allowed", response)
@@ -235,7 +180,7 @@ class WakeupService : Service() {
         output.println("Access-Control-Allow-Methods: POST, OPTIONS")
         output.println("Access-Control-Allow-Headers: Content-Type")
         output.println("Content-Length: ${body.length}")
-        output.println() // Empty line to end headers
+        output.println()
         output.print(body)
         output.flush()
     }
@@ -246,7 +191,7 @@ class WakeupService : Service() {
         output.println("Access-Control-Allow-Methods: POST, OPTIONS")
         output.println("Access-Control-Allow-Headers: Content-Type")
         output.println("Content-Length: 0")
-        output.println() // Empty line to end headers
+        output.println()
         output.flush()
     }
 }

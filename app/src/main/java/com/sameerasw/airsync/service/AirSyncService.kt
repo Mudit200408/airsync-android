@@ -56,9 +56,18 @@ class AirSyncService : Service() {
 
         val action = intent?.action
         when (action) {
-            ACTION_START_SCANNING -> startScanning()
+            ACTION_START_SCANNING -> {
+                if (WebSocketUtil.isConnected()) {
+                    connectedDeviceName = resolveConnectedDeviceName()
+                    startSync()
+                } else {
+                    startScanning()
+                }
+            }
             ACTION_START_SYNC -> {
-                connectedDeviceName = intent.getStringExtra(EXTRA_DEVICE_NAME) ?: "Mac"
+                connectedDeviceName = intent.getStringExtra(EXTRA_DEVICE_NAME)
+                    ?: resolveConnectedDeviceName()
+                    ?: "Mac"
                 startSync()
             }
 
@@ -78,6 +87,13 @@ class AirSyncService : Service() {
     }
 
     private fun startScanning() {
+        if (WebSocketUtil.isConnected()) {
+            Log.d(TAG, "Ignoring scanning request because AirSync is already connected")
+            connectedDeviceName = resolveConnectedDeviceName()
+            startSync()
+            return
+        }
+
         Log.d(TAG, "Starting AirSync scanning mode")
         isScanning = true
         connectedDeviceName = null
@@ -103,8 +119,8 @@ class AirSyncService : Service() {
             }
         }
 
-        // Start WakeupService for HTTP wakeups
-        WakeupService.startService(this)
+        // Keep the wake-up listener alive under this foreground service.
+        WakeupServerManager.start(this)
 
         // Also trigger auto-reconnect logic to check if we already have a candidate
         WebSocketUtil.requestAutoReconnect(this)
@@ -129,6 +145,7 @@ class AirSyncService : Service() {
     private fun startSync() {
         Log.d(TAG, "Starting AirSync foreground service (connected)")
         isScanning = false
+        connectedDeviceName = resolveConnectedDeviceName() ?: connectedDeviceName ?: "Mac"
         startForeground(NOTIFICATION_ID, buildNotification())
 
         val dataStoreManager =
@@ -142,13 +159,13 @@ class AirSyncService : Service() {
         UDPDiscoveryManager.start(this, isDiscoveryEnabled)
         UDPDiscoveryManager.setDiscoveryMode(this, DiscoveryMode.PASSIVE)
 
-        WakeupService.startService(this)
+        WakeupServerManager.start(this)
     }
 
     private fun stopSync() {
         Log.d(TAG, "Stopping AirSync foreground service")
         UDPDiscoveryManager.stop(this)
-        WakeupService.stopService(this)
+        WakeupServerManager.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -193,6 +210,21 @@ class AirSyncService : Service() {
         }
     }
 
+    private fun resolveConnectedDeviceName(): String? {
+        if (!connectedDeviceName.isNullOrBlank()) return connectedDeviceName
+
+        return try {
+            val dataStoreManager =
+                com.sameerasw.airsync.data.local.DataStoreManager.getInstance(applicationContext)
+            runBlocking {
+                dataStoreManager.getLastConnectedDevice().first()?.name
+            }?.takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to resolve connected device name", e)
+            null
+        }
+    }
+
     private fun buildNotification(): Notification {
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
@@ -211,11 +243,13 @@ class AirSyncService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
 
-        if (isScanning && connectedDeviceName == null) {
+        val resolvedDeviceName = resolveConnectedDeviceName()
+
+        if (isScanning && resolvedDeviceName == null) {
             builder.setContentTitle(getString(R.string.app_name))
             builder.setContentText(getString(R.string.no_device_connected))
         } else {
-            val name = connectedDeviceName ?: "Mac"
+            val name = resolvedDeviceName ?: "Mac"
             builder.setContentTitle(getString(R.string.app_name))
             builder.setContentText(getString(R.string.connected_to_device, name))
             builder.addAction(
@@ -244,6 +278,7 @@ class AirSyncService : Service() {
 
         com.sameerasw.airsync.utils.MacDeviceStatusManager.stopMonitoring()
         com.sameerasw.airsync.utils.MacDeviceStatusManager.cleanup(this)
+        WakeupServerManager.stop()
         scope.coroutineContext.cancel()
         super.onDestroy()
     }

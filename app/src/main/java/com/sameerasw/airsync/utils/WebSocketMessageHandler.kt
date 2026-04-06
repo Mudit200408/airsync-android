@@ -589,6 +589,15 @@ object WebSocketMessageHandler {
 
                         Log.d(TAG, "Device info updated successfully in storage")
 
+                        try {
+                            com.sameerasw.airsync.service.AirSyncService.start(
+                                context,
+                                if (macName.isNotBlank()) macName else last.name
+                            )
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Unable to refresh AirSync notification: ${e.message}")
+                        }
+
                         // Also update the network-aware device storage if possible
                         try {
                             val ourIp = DeviceInfoUtil.getWifiIpAddress(context) ?: ""
@@ -914,4 +923,3 @@ object WebSocketMessageHandler {
         }
     }
 }
-
