@@ -172,11 +172,12 @@ class AirSyncService : Service() {
             networkCallback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     Log.d(TAG, "Network available, triggering burst broadcast")
-                    // When network becomes available, do a burst to announce ourselves
-                    if (isScanning) {
-                        UDPDiscoveryManager.burstBroadcast(applicationContext)
-                        WebSocketUtil.requestAutoReconnect(applicationContext)
-                    }
+                    UDPDiscoveryManager.burstBroadcast(applicationContext)
+                    WebSocketUtil.requestAutoReconnect(applicationContext)
+                }
+                
+                override fun onLost(network: Network) {
+                    Log.d(TAG, "Network lost")
                 }
             }
 

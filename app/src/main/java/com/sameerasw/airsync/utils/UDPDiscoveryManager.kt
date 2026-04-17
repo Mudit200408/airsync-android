@@ -79,7 +79,7 @@ object UDPDiscoveryManager {
 
         startListening(context)
         updateBroadcastingState(context)
-        startPruning()
+startPruning(context)
     }
 
     fun setDiscoveryMode(context: Context, mode: DiscoveryMode) {
@@ -532,7 +532,7 @@ object UDPDiscoveryManager {
         return ips
     }
 
-    private fun startPruning() {
+    private fun startPruning(context: Context) {
         pruningJob = CoroutineScope(Dispatchers.IO).launch {
             while (isRunning) {
                 delay(PRUNE_INTERVAL_MS)
@@ -543,14 +543,45 @@ object UDPDiscoveryManager {
                     _discoveredDevices.value = active
                 }
 
-                // Smart Auto-Connect logic trigger
-                // When in PASSIVE mode, if we see a device we know, try to connect!
-                if (currentMode == DiscoveryMode.PASSIVE && active.isNotEmpty()) {
-                    // We rely on the WebSocketUtil's existing auto-connect logic 
-                    // which might need to be notified that candidates are available
-                    // But actually, WebSocketUtil.tryStartAutoReconnect observes _discoveredDevices
-                    // so it should pick it up automatically if the service requested auto-connect.
+                if (active.isNotEmpty() && !WebSocketUtil.isConnected() && !WebSocketUtil.isConnecting()) {
+                    tryConnectToKnownDevice(context, active)
                 }
+            }
+        }
+    }
+
+    private fun tryConnectToKnownDevice(ctx: Context, devices: List<DiscoveredDevice>) {
+        val context = ctx.applicationContext ?: return
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val ds = com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
+                val isAutoEnabled = ds.getAutoReconnectEnabled().first()
+                val wasManual = ds.getUserManuallyDisconnected().first()
+                
+                if (!isAutoEnabled || wasManual) return@launch
+
+                val lastDevice = ds.getLastConnectedDevice().first() ?: return@launch
+                val allConnections = ds.getAllNetworkDeviceConnections().first()
+                
+                val match = devices.find { it.name == lastDevice.name }
+                if (match != null) {
+                    val targetConnection = allConnections.firstOrNull { it.deviceName == lastDevice.name }
+                    if (targetConnection != null) {
+                        val ips = match.ips.joinToString(",")
+                        val port = targetConnection.port.toIntOrNull() ?: 6996
+                        Log.d(TAG, "Auto-connecting to discovered device: ${match.name} at $ips:$port")
+                        WebSocketUtil.connect(
+                            context = context,
+                            ipAddress = ips,
+                            port = port,
+                            symmetricKey = targetConnection.symmetricKey,
+                            manualAttempt = false,
+                            onConnectionStatus = { _ -> }
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in auto-connect: ${e.message}")
             }
         }
     }

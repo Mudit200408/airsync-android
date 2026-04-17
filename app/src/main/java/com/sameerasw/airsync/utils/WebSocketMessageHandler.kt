@@ -408,8 +408,7 @@ object WebSocketMessageHandler {
 
     private fun handlePing(context: Context) {
         try {
-            // Respond to ping with current device status to keep connection alive
-            // We must force sync here because the server expects a response to every ping
+            WebSocketUtil.sendMessage("{\"type\":\"pong\",\"data\":{}}")
             SyncManager.checkAndSyncDeviceStatus(context, forceSync = true)
         } catch (e: Exception) {
             Log.e(TAG, "Error handling ping: ${e.message}")
