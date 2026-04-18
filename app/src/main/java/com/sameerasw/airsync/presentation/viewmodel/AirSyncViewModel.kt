@@ -36,6 +36,7 @@ class AirSyncViewModel(
 ) : ViewModel() {
 
     companion object {
+        private const val TAG = "AirSyncViewModel"
         fun create(context: Context): AirSyncViewModel {
             val dataStoreManager = DataStoreManager(context)
             val repository = AirSyncRepositoryImpl(dataStoreManager)
@@ -187,6 +188,9 @@ class AirSyncViewModel(
             appContext?.unregisterReceiver(powerSaveReceiver)
         } catch (_: IllegalArgumentException) {
             // Receiver was not registered
+        } catch (e: Exception) {
+            // Context may be invalid (Activity leaked)
+            Log.e(TAG, "Failed to unregister receiver: ${e.message}")
         }
     }
 

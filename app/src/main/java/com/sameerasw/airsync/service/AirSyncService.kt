@@ -171,13 +171,32 @@ class AirSyncService : Service() {
 
             networkCallback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    Log.d(TAG, "Network available, triggering burst broadcast")
+                    val networkStatus = com.sameerasw.airsync.utils.DeviceInfoUtil.getNetworkStatus(this@AirSyncService)
+                    val networkType = when {
+                        networkStatus.hasWifi -> "WiFi"
+                        networkStatus.hasVpn -> "VPN/Tailscale"
+                        networkStatus.hasCellular -> "Cellular"
+                        else -> "Unknown"
+                    }
+                    Log.d(TAG, "Network available: $networkType, triggering discovery")
+                    
+                    // Burst broadcast to announce presence
                     UDPDiscoveryManager.burstBroadcast(applicationContext)
+                    
+                    // Trigger auto-reconnect for any known peers
                     WebSocketUtil.requestAutoReconnect(applicationContext)
                 }
                 
                 override fun onLost(network: Network) {
-                    Log.d(TAG, "Network lost")
+                    Log.d(TAG, "Network lost - may need to switch to VPN fallback")
+                    // Trigger peer exchange to find peers via alternative routes
+                    com.sameerasw.airsync.utils.UDPDiscoveryManager.triggerPeerExchange(this@AirSyncService)
+                }
+                
+                override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                    val hasWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                    val hasVpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                    Log.d(TAG, "Network capabilities changed - WiFi: $hasWifi, VPN: $hasVpn")
                 }
             }
 

@@ -720,8 +720,17 @@ object WebSocketUtil {
                     }
 
                     val last = ds.getLastConnectedDevice().first() ?: return
-                    DeviceInfoUtil.getWifiIpAddress(context) ?: return
+                    
+                    // Check if we have ANY network available (WiFi, VPN, or Cellular)
+                    val networkStatus = DeviceInfoUtil.getNetworkStatus(context)
+                    val hasNetwork = networkStatus.isConnected
+                    
+                    if (!hasNetwork) {
+                        Log.d(TAG, "No network available, skipping auto-reconnect")
+                        return
+                    }
 
+                    // Try discovered devices first
                     val discoveryMatch = discoveredList.find { it.name == last.name }
                     if (discoveryMatch != null) {
                         val all = ds.getAllNetworkDeviceConnections().first()
@@ -731,7 +740,7 @@ object WebSocketUtil {
                             val ips = discoveryMatch.ips.joinToString(",")
                             val port = targetConnection.port.toIntOrNull() ?: 6996
 
-                            Log.d(TAG, "Smart Auto-reconnect attempting discovery connection to $ips:$port")
+                            Log.d(TAG, "Smart Auto-reconnect attempting discovery connection to $ips:$port (strategy: ${networkStatus.networkType})")
                             connect(
                                 context = context,
                                 ipAddress = ips,
@@ -769,6 +778,8 @@ object WebSocketUtil {
                         tryConnectIfAvailable(discoveredList)
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Coroutine was cancelled - this is normal, not an error
             } catch (e: Exception) {
                 Log.e(TAG, "Error in discovery auto-reconnect: ${e.message}")
             }

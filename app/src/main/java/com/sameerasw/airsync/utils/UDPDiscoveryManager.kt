@@ -40,11 +40,18 @@ enum class DiscoveryMode {
     PASSIVE  // Listening only (Background)
 }
 
+enum class NetworkDiscoveryStrategy {
+    WIFI_ONLY,           // WiFi available, use standard UDP broadcast
+    VPN_FALLBACK,        // No WiFi, use Tailscale/VPN discovery
+    HYBRID              // Both WiFi and VPN available
+}
+
 object UDPDiscoveryManager {
     private const val TAG = "UDPDiscoveryManager"
     private const val BROADCAST_PORT = 8889
     private const val PRUNE_INTERVAL_MS = 10000L
     private const val DEVICE_TIMEOUT_MS = 25000L
+    private const val PEER_EXCHANGE_INTERVAL_MS = 30000L  // Exchange peer info every 30s
 
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredDevice>>(emptyList())
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = _discoveredDevices.asStateFlow()
@@ -54,6 +61,7 @@ object UDPDiscoveryManager {
     private var broadcastJob: Job? = null
     private var pruningJob: Job? = null
     private var burstJob: Job? = null
+    private var peerExchangeJob: Job? = null
 
     @Volatile
     private var isRunning = false
@@ -64,7 +72,13 @@ object UDPDiscoveryManager {
     @Volatile
     private var isDiscoveryEnabled = true
 
-    fun start(context: Context, discoveryEnabled: Boolean = true) {
+    // Network state for no-WiFi handling
+    @Volatile
+    private var currentStrategy = NetworkDiscoveryStrategy.WIFI_ONLY
+    @Volatile
+    private var lastKnownPeerIps: MutableMap<String, Set<String>> = mutableMapOf() // deviceId -> IPs
+
+fun start(context: Context, discoveryEnabled: Boolean = true) {
         isDiscoveryEnabled = discoveryEnabled
         if (isRunning) {
             updateBroadcastingState(context)
@@ -72,14 +86,24 @@ object UDPDiscoveryManager {
         }
 
         isRunning = true
+        
+        // Detect initial network strategy
+        val networkStatus = DeviceInfoUtil.getNetworkStatus(context)
+        currentStrategy = when {
+            networkStatus.hasWifi -> NetworkDiscoveryStrategy.WIFI_ONLY
+            networkStatus.hasVpn -> NetworkDiscoveryStrategy.VPN_FALLBACK
+            else -> NetworkDiscoveryStrategy.HYBRID
+        }
+        
         Log.d(
             TAG,
-            "Starting UDP Discovery Manager (Discovery: $isDiscoveryEnabled, Mode: $currentMode)"
+            "Starting UDP Discovery Manager (Discovery: $isDiscoveryEnabled, Mode: $currentMode, Strategy: $currentStrategy)"
         )
 
         startListening(context)
         updateBroadcastingState(context)
-startPruning(context)
+        startPruning(context)
+        startPeerExchange(context)
     }
 
     fun setDiscoveryMode(context: Context, mode: DiscoveryMode) {
@@ -101,6 +125,18 @@ startPruning(context)
             Log.d(TAG, "Burst broadcast finished")
         }
     }
+
+    fun triggerPeerExchange(context: Context) {
+        if (!isRunning) return
+        Log.d(TAG, "Manually triggering peer exchange")
+        CoroutineScope(Dispatchers.IO).launch {
+            performPeerExchange(context)
+        }
+    }
+
+    fun getCurrentNetworkStrategy(): NetworkDiscoveryStrategy = currentStrategy
+
+    fun getLastKnownPeerIps(): Map<String, Set<String>> = lastKnownPeerIps.toMap()
 
     private fun updateBroadcastingState(context: Context) {
         broadcastJob?.cancel()
@@ -212,6 +248,9 @@ startPruning(context)
                             if (macIp != null) {
                                 CoroutineScope(Dispatchers.IO).launch {
                                     sendPresenceUnicast(context, macIp)
+                                    if (!WebSocketUtil.isConnected() && !WebSocketUtil.isConnecting()) {
+                                        WebSocketUtil.requestAutoReconnect(context)
+                                    }
                                 }
                             }
                         }
@@ -237,6 +276,11 @@ startPruning(context)
                     CoroutineScope(Dispatchers.IO).launch {
                         WakeupHandler.processWakeupRequest(context, macIp, macPort, macName)
                     }
+                }
+
+                "peerExchange" -> {
+                    // Handle peer exchange for no-WiFi discovery
+                    handlePeerExchange(context, json)
                 }
             }
         } catch (e: Exception) {
@@ -496,6 +540,180 @@ startPruning(context)
         }
     }
 
+    private fun startPeerExchange(context: Context) {
+        peerExchangeJob?.cancel()
+        peerExchangeJob = CoroutineScope(Dispatchers.IO).launch {
+            while (isRunning) {
+                delay(PEER_EXCHANGE_INTERVAL_MS)
+                performPeerExchange(context)
+            }
+        }
+    }
+
+    private fun performPeerExchange(context: Context) {
+        val networkStatus = DeviceInfoUtil.getNetworkStatus(context)
+        
+        // Update strategy based on current network
+        currentStrategy = when {
+            networkStatus.hasWifi -> NetworkDiscoveryStrategy.WIFI_ONLY
+            networkStatus.hasVpn -> NetworkDiscoveryStrategy.VPN_FALLBACK
+            else -> NetworkDiscoveryStrategy.HYBRID
+        }
+
+        val allIps = getAllIpAddresses()
+        if (allIps.isEmpty()) return
+
+        val ds = com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
+        val expandNetworkingEnabled = try {
+            runBlocking { ds.getExpandNetworkingEnabled().first() }
+        } catch (e: Exception) { true }
+
+        val customName = try {
+            runBlocking { ds.getDeviceName().first() }
+        } catch (e: Exception) { "" }
+        val deviceName = if (customName.isNotBlank()) customName else android.os.Build.MODEL
+        val deviceId = DeviceInfoUtil.getDeviceId(context)
+
+        val json = JSONObject()
+        json.put("type", "peerExchange")
+        json.put("deviceType", "android")
+        json.put("id", deviceId)
+        json.put("name", deviceName)
+        
+        // Include all IPs based on settings
+        val ipsToSend = if (expandNetworkingEnabled) allIps else allIps.filter { !it.startsWith("100.") }
+        json.put("ips", FilteredIpArray(ipsToSend))
+        
+        // Include network strategy
+        json.put("strategy", currentStrategy.name)
+        
+        // Include known peer IPs from stored connections (for no-WiFi scenarios)
+        val knownPeers = mutableMapOf<String, List<String>>()
+        try {
+            val connections = runBlocking { ds.getAllNetworkDeviceConnections().first() }
+            for (conn in connections) {
+                val peerIps = conn.networkConnections.values.toList()
+                if (peerIps.isNotEmpty()) {
+                    knownPeers[conn.deviceName] = peerIps
+                }
+            }
+        } catch (e: Exception) { }
+        
+        // Build JSON object for knownPeers manually
+        val knownPeersJson = org.json.JSONObject()
+        for ((name, ips) in knownPeers) {
+            val ipsArray = org.json.JSONArray()
+            for (ip in ips) {
+                ipsArray.put(ip)
+            }
+            knownPeersJson.put(name, ipsArray)
+        }
+        json.put("knownPeers", knownPeersJson)
+
+        val payload = json.toString()
+
+        // Send to all known peer IPs (even without WiFi, we can reach Tailscale peers)
+        val allKnownTargetIps = mutableSetOf<String>()
+        try {
+            val connections = runBlocking { ds.getAllNetworkDeviceConnections().first() }
+            for (conn in connections) {
+                allKnownTargetIps.addAll(conn.networkConnections.values)
+            }
+        } catch (e: Exception) { }
+
+        // Store our IPs for peers to discover
+        lastKnownPeerIps[deviceId] = ipsToSend.toSet()
+
+        // Broadcast our presence to all known peers
+        for (targetIp in allKnownTargetIps) {
+            // Skip if it's our own IP
+            if (ipsToSend.contains(targetIp)) continue
+            
+            // In VPN_FALLBACK mode, only try Tailscale/VPN IPs
+            if (currentStrategy == NetworkDiscoveryStrategy.VPN_FALLBACK && !targetIp.startsWith("100.")) {
+                continue
+            }
+            
+            sendUnicast(targetIp, payload)
+        }
+
+        Log.d(TAG, "Peer exchange: strategy=$currentStrategy, knownPeers=${knownPeers.size}")
+    }
+
+    private fun handlePeerExchange(context: Context, json: JSONObject) {
+        try {
+            val id = json.optString("id")
+            val name = json.optString("name")
+            val ipsArray = json.optJSONArray("ips")
+            val port = json.optInt("port", 0)
+            val deviceType = json.optString("deviceType")
+            val knownPeers = json.optJSONObject("knownPeers")
+
+            if (id.isEmpty() || name.isEmpty() || ipsArray == null) return
+
+            val ips = mutableSetOf<String>()
+            for (i in 0 until ipsArray.length()) {
+                ips.add(ipsArray.getString(i))
+            }
+
+            val ds = com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
+            val expandNetworkingEnabled = try {
+                runBlocking { ds.getExpandNetworkingEnabled().first() }
+            } catch (e: Exception) { true }
+
+            // Validate IPs
+            val validIps = ips.filter { ip ->
+                if (ip.startsWith("100.")) {
+                    expandNetworkingEnabled || DeviceInfoUtil.getNetworkStatus(context).hasVpn
+                } else true
+            }.toSet()
+
+            if (validIps.isEmpty()) return
+
+            // Update peer knowledge for future connections
+            lastKnownPeerIps[id] = validIps
+
+            // Also learn about peer's known peers (recursive discovery)
+            if (knownPeers != null && expandNetworkingEnabled) {
+                handleKnownPeersFromPeer(context, knownPeers)
+            }
+
+            val device = DiscoveredDevice(
+                id = id,
+                name = name,
+                ips = validIps,
+                port = port,
+                type = deviceType,
+                lastSeen = System.currentTimeMillis()
+            )
+            updateDeviceList(device, validIps)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling peer exchange: ${e.message}")
+        }
+    }
+
+    private fun handleKnownPeersFromPeer(context: Context, knownPeers: org.json.JSONObject) {
+        // When a peer sends us their known peers, store them for potential future connection
+        // This helps discover devices even when we're not on the same network
+        try {
+            val ds = com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
+            
+            knownPeers.keys().forEach { deviceName ->
+                val peerIps = knownPeers.getJSONArray(deviceName)
+                val ips = mutableSetOf<String>()
+                for (i in 0 until peerIps.length()) {
+                    ips.add(peerIps.getString(i))
+                }
+                
+                // Store these IPs as potential connection targets
+                // This allows us to reach peers even if we can't broadcast
+                Log.d(TAG, "Learned peer $deviceName with IPs: $ips from peer exchange")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling known peers: ${e.message}")
+        }
+    }
+
     private fun FilteredIpArray(ips: List<String>): org.json.JSONArray {
         val array = org.json.JSONArray()
         ips.forEach { array.put(it) }
@@ -544,44 +762,8 @@ startPruning(context)
                 }
 
                 if (active.isNotEmpty() && !WebSocketUtil.isConnected() && !WebSocketUtil.isConnecting()) {
-                    tryConnectToKnownDevice(context, active)
+                    WebSocketUtil.requestAutoReconnect(context)
                 }
-            }
-        }
-    }
-
-    private fun tryConnectToKnownDevice(ctx: Context, devices: List<DiscoveredDevice>) {
-        val context = ctx.applicationContext ?: return
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val ds = com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
-                val isAutoEnabled = ds.getAutoReconnectEnabled().first()
-                val wasManual = ds.getUserManuallyDisconnected().first()
-                
-                if (!isAutoEnabled || wasManual) return@launch
-
-                val lastDevice = ds.getLastConnectedDevice().first() ?: return@launch
-                val allConnections = ds.getAllNetworkDeviceConnections().first()
-                
-                val match = devices.find { it.name == lastDevice.name }
-                if (match != null) {
-                    val targetConnection = allConnections.firstOrNull { it.deviceName == lastDevice.name }
-                    if (targetConnection != null) {
-                        val ips = match.ips.joinToString(",")
-                        val port = targetConnection.port.toIntOrNull() ?: 6996
-                        Log.d(TAG, "Auto-connecting to discovered device: ${match.name} at $ips:$port")
-                        WebSocketUtil.connect(
-                            context = context,
-                            ipAddress = ips,
-                            port = port,
-                            symmetricKey = targetConnection.symmetricKey,
-                            manualAttempt = false,
-                            onConnectionStatus = { _ -> }
-                        )
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in auto-connect: ${e.message}")
             }
         }
     }
