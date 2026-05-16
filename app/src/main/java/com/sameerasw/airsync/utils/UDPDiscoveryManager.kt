@@ -256,29 +256,30 @@ object UDPDiscoveryManager {
     }
 
     private fun handleIncomingTraffic(context: Context, message: String, sourceIp: String?) {
-        try {
-            val json = JSONObject(message)
-            val type = json.optString("type")
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val json = JSONObject(message)
+                val type = json.optString("type")
 
-            when (type) {
-                "presence" -> {
-                    val deviceType = json.optString("deviceType")
-                    if (deviceType == "mac") {
-                        handlePresenceMessage(context, json, sourceIp)
+                when (type) {
+                    "presence" -> {
+                        val deviceType = json.optString("deviceType")
+                        if (deviceType == "mac") {
+                            handlePresenceMessage(context, json, sourceIp)
 
-                        // Lazy-handshake: when in PASSIVE mode and we see a Mac presence beacon,
-                        // respond with a single unicast so the Mac knows we're alive.
-                        // This is battery-friendly (no loop, no timer) and is the primary
-                        // mechanism that makes the Mac auto-discover the Android when the
-                        // AirSync app is in the background.
-                        if (currentMode == DiscoveryMode.PASSIVE && isDiscoveryEnabled) {
-                            val macIp = sourceIp ?: run {
-                                val ipsArray = json.optJSONArray("ips")
-                                if (ipsArray != null && ipsArray.length() > 0) ipsArray.getString(0)
-                                else json.optString("ip").takeIf { it.isNotEmpty() }
-                            }
-                            if (macIp != null) {
-                                CoroutineScope(Dispatchers.IO).launch {
+                            // Lazy-handshake: when in PASSIVE mode and we see a Mac presence beacon,
+                            // respond with a single unicast so the Mac knows we're alive.
+                            // This is battery-friendly (no loop, no timer) and is the primary
+                            // mechanism that makes the Mac auto-discover the Android when the
+                            // AirSync app is in the background.
+                            if (currentMode == DiscoveryMode.PASSIVE && isDiscoveryEnabled) {
+                                val macIp = sourceIp ?: run {
+                                    val ipsArray = json.optJSONArray("ips")
+                                    if (ipsArray != null && ipsArray.length() > 0) ipsArray.getString(0)
+                                    else json.optString("ip").takeIf { it.isNotEmpty() }
+                                }
+                                if (macIp != null) {
+                                    // Already in an IO coroutine, no need to launch another one for unicast
                                     sendPresenceUnicast(context, macIp)
                                     if (!WebSocketUtil.isConnected() && !WebSocketUtil.isConnecting()) {
                                         WebSocketUtil.requestAutoReconnect(context)
@@ -287,36 +288,34 @@ object UDPDiscoveryManager {
                             }
                         }
                     }
-                }
 
-                "bye" -> {
-                    val deviceType = json.optString("deviceType")
-                    if (deviceType == "mac") {
-                        val id = json.optString("id")
-                        val currentList = _discoveredDevices.value.filter { it.id != id }
-                        _discoveredDevices.value = currentList
+                    "bye" -> {
+                        val deviceType = json.optString("deviceType")
+                        if (deviceType == "mac") {
+                            val id = json.optString("id")
+                            val currentList = _discoveredDevices.value.filter { it.id != id }
+                            _discoveredDevices.value = currentList
+                        }
                     }
-                }
 
-                "wakeUpRequest" -> {
-                    // Handle wake-up logic shifted from WakeupService
-                    val data = if (json.has("data")) json.getJSONObject("data") else json
-                    val macIp = data.optString("macIP", data.optString("macIp", ""))
-                    val macPort = data.optInt("macPort", 6996)
-                    val macName = data.optString("macName", "Mac")
+                    "wakeUpRequest" -> {
+                        // Handle wake-up logic shifted from WakeupService
+                        val data = if (json.has("data")) json.getJSONObject("data") else json
+                        val macIp = data.optString("macIP", data.optString("macIp", ""))
+                        val macPort = data.optInt("macPort", 6996)
+                        val macName = data.optString("macName", "Mac")
 
-                    CoroutineScope(Dispatchers.IO).launch {
                         WakeupHandler.processWakeupRequest(context, macIp, macPort, macName)
                     }
-                }
 
-                "peerExchange" -> {
-                    // Handle peer exchange for no-WiFi discovery
-                    handlePeerExchange(context, json)
+                    "peerExchange" -> {
+                        // Handle peer exchange for no-WiFi discovery
+                        handlePeerExchange(context, json)
+                    }
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error handling incoming traffic: ${e.message}")
             }
-        } catch (e: Exception) {
-
         }
     }
 

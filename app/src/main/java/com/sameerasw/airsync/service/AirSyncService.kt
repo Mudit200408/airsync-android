@@ -96,15 +96,23 @@ class AirSyncService : Service() {
 
         val dataStoreManager =
             com.sameerasw.airsync.data.local.DataStoreManager.getInstance(applicationContext)
-        val isDiscoveryEnabled = runBlocking {
-            dataStoreManager.getDeviceDiscoveryEnabled().first()
-        }
-
-        // Start in ACTIVE mode briefly so we announce ourselves immediately after a disconnect.
-        // After 60 seconds, fall back to battery-friendly PASSIVE mode.
-        UDPDiscoveryManager.start(this, isDiscoveryEnabled)
+        
+        // Start with default of true to avoid blocking the thread during boot
+        UDPDiscoveryManager.start(this, true)
         UDPDiscoveryManager.setDiscoveryMode(this, DiscoveryMode.ACTIVE)
         UDPDiscoveryManager.burstBroadcast(this)
+        
+        // Update asynchronously
+        scope.launch {
+            try {
+                val isDiscoveryEnabled = dataStoreManager.getDeviceDiscoveryEnabled().first()
+                if (!isDiscoveryEnabled) {
+                    UDPDiscoveryManager.setDiscoveryEnabled(this@AirSyncService, false)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to read discovery preference", e)
+            }
+        }
 
         scope.launch {
             delay(60_000L)
@@ -142,14 +150,23 @@ class AirSyncService : Service() {
 
         val dataStoreManager =
             com.sameerasw.airsync.data.local.DataStoreManager.getInstance(applicationContext)
-        val isDiscoveryEnabled = runBlocking {
-            dataStoreManager.getDeviceDiscoveryEnabled().first()
-        }
 
         // Keep discovery manager running for wake-ups even when connected
         // But stay in Passive mode mostly
-        UDPDiscoveryManager.start(this, isDiscoveryEnabled)
+        UDPDiscoveryManager.start(this, true) // Start with default true
         UDPDiscoveryManager.setDiscoveryMode(this, DiscoveryMode.PASSIVE)
+        
+        // Update asynchronously
+        scope.launch {
+            try {
+                val isDiscoveryEnabled = dataStoreManager.getDeviceDiscoveryEnabled().first()
+                if (!isDiscoveryEnabled) {
+                    UDPDiscoveryManager.setDiscoveryEnabled(this@AirSyncService, false)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to read discovery preference", e)
+            }
+        }
 
         startHttpServer()
     }
