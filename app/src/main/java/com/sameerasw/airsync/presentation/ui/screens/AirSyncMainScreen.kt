@@ -946,35 +946,16 @@ fun AirSyncMainScreen(
                                                                             8.dp
                                                                         )
                                                                     )
-                                                                    if (device.hasLocalIp()) {
-                                                                        Icon(
-                                                                            painter = painterResource(
-                                                                                R.drawable.rounded_android_wifi_3_bar_24
-                                                                            ),
-                                                                            contentDescription = "Wi-Fi",
-                                                                            modifier = Modifier.size(
-                                                                                14.dp
-                                                                            ),
-                                                                            tint = MaterialTheme.colorScheme.primary
-                                                                        )
-                                                                    }
-                                                                    if (device.hasTailscaleIp()) {
-                                                                        if (device.hasLocalIp()) Spacer(
-                                                                            modifier = Modifier.width(
-                                                                                4.dp
-                                                                            )
-                                                                        )
-                                                                        Icon(
-                                                                            painter = painterResource(
-                                                                                R.drawable.rounded_network_node_24
-                                                                            ),
-                                                                            contentDescription = "Tailscale",
-                                                                            modifier = Modifier.size(
-                                                                                14.dp
-                                                                            ),
-                                                                            tint = MaterialTheme.colorScheme.secondary
-                                                                        )
-                                                                    }
+                                                                    Icon(
+                                                                        painter = painterResource(
+                                                                            R.drawable.rounded_android_wifi_3_bar_24
+                                                                        ),
+                                                                        contentDescription = "Wi-Fi",
+                                                                        modifier = Modifier.size(
+                                                                            14.dp
+                                                                        ),
+                                                                        tint = MaterialTheme.colorScheme.primary
+                                                                    )
                                                                 }
                                                                 Text(
                                                                     text = "${device.getBestIp()}:${device.port}",

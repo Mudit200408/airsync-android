@@ -689,8 +689,6 @@ fun PreferencesStepContent(
                     localIp = deviceInfo.localIp,
                     onDeviceNameChange = { viewModel.updateDeviceName(it) }
                 )
-
-                com.sameerasw.airsync.presentation.ui.components.cards.ExpandNetworkingCard(context)
             }
 
             Spacer(modifier = Modifier.height(32.dp))

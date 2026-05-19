@@ -107,18 +107,8 @@ object DeviceInfoUtil {
         }
     }
 
-    enum class NetworkType {
-        WIFI,
-        CELLULAR,
-        VPN,
-        ETHERNET,
-        OTHER,
-        NONE
-    }
-
     data class NetworkStatus(
         val isConnected: Boolean,
-        val networkType: NetworkType,
         val hasWifi: Boolean,
         val hasVpn: Boolean,
         val hasCellular: Boolean
@@ -131,45 +121,26 @@ object DeviceInfoUtil {
             val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
             
             if (capabilities == null) {
-                return NetworkStatus(false, NetworkType.NONE, false, false, false)
+                return NetworkStatus(false, false, false, false)
             }
             
             val hasWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
             val hasCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
             val hasVpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
-            val hasEthernet = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
-            
-            val networkType = when {
-                hasWifi -> NetworkType.WIFI
-                hasEthernet -> NetworkType.ETHERNET
-                hasVpn -> NetworkType.VPN
-                hasCellular -> NetworkType.CELLULAR
-                else -> NetworkType.OTHER
-            }
             
             NetworkStatus(
                 isConnected = true,
-                networkType = networkType,
                 hasWifi = hasWifi,
                 hasVpn = hasVpn,
                 hasCellular = hasCellular
             )
         } catch (_: Exception) {
-            NetworkStatus(false, NetworkType.NONE, false, false, false)
+            NetworkStatus(false, false, false, false)
         }
     }
 
-    fun isWifiAvailable(context: Context): Boolean {
-        return getNetworkStatus(context).hasWifi
-    }
-
-    fun isVpnAvailable(context: Context): Boolean {
-        return getNetworkStatus(context).hasVpn
-    }
-
     fun isNetworkAvailableForConnection(context: Context): Boolean {
-        val status = getNetworkStatus(context)
-        return status.isConnected && (status.hasWifi || status.hasVpn || status.hasCellular)
+        return getLocalIpAddress() != null
     }
 
     fun getBatteryInfo(context: Context): BatteryInfo {

@@ -67,7 +67,6 @@ class DataStoreManager(private val context: Context) {
         // Always show in Smartspacer toggle
         private val SMARTSPACER_SHOW_WHEN_DISCONNECTED =
             booleanPreferencesKey("smartspacer_show_when_disconnected")
-        private val EXPAND_NETWORKING_ENABLED = booleanPreferencesKey("expand_networking_enabled")
 
         // Mac Media controls toggle (for user-initiated proof for Play Store)
         private val MAC_MEDIA_CONTROLS_ENABLED = booleanPreferencesKey("mac_media_controls_enabled")
@@ -268,18 +267,6 @@ class DataStoreManager(private val context: Context) {
     fun getSmartspacerShowWhenDisconnected(): Flow<Boolean> {
         return context.dataStore.data.map { preferences ->
             preferences[SMARTSPACER_SHOW_WHEN_DISCONNECTED] ?: false
-        }
-    }
-
-    suspend fun setExpandNetworkingEnabled(enabled: Boolean) {
-        context.dataStore.edit { prefs ->
-            prefs[EXPAND_NETWORKING_ENABLED] = enabled
-        }
-    }
-
-    fun getExpandNetworkingEnabled(): Flow<Boolean> {
-        return context.dataStore.data.map { prefs ->
-            prefs[EXPAND_NETWORKING_ENABLED] ?: false
         }
     }
 

@@ -184,20 +184,10 @@ class AirSyncService : Service() {
         try {
             val connectivityManager =
                 getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-            val builder = NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
 
             networkCallback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    val networkStatus = com.sameerasw.airsync.utils.DeviceInfoUtil.getNetworkStatus(this@AirSyncService)
-                    val networkType = when {
-                        networkStatus.hasWifi -> "WiFi"
-                        networkStatus.hasVpn -> "VPN/Tailscale"
-                        networkStatus.hasCellular -> "Cellular"
-                        else -> "Unknown"
-                    }
-                    Log.d(TAG, "Network available: $networkType, triggering discovery")
+                    Log.d(TAG, "Network available, triggering discovery")
                     
                     // Burst broadcast to announce presence
                     UDPDiscoveryManager.burstBroadcast(applicationContext)
@@ -207,19 +197,13 @@ class AirSyncService : Service() {
                 }
                 
                 override fun onLost(network: Network) {
-                    Log.d(TAG, "Network lost - may need to switch to VPN fallback")
+                    Log.d(TAG, "Network lost")
                     // Trigger peer exchange to find peers via alternative routes
                     com.sameerasw.airsync.utils.UDPDiscoveryManager.triggerPeerExchange(this@AirSyncService)
                 }
-                
-                override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                    val hasWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                    val hasVpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
-                    Log.d(TAG, "Network capabilities changed - WiFi: $hasWifi, VPN: $hasVpn")
-                }
             }
 
-            connectivityManager.registerNetworkCallback(builder.build(), networkCallback!!)
+            connectivityManager.registerDefaultNetworkCallback(networkCallback!!)
         } catch (e: Exception) {
             Log.e(TAG, "Error registering network callback", e)
         }

@@ -64,7 +64,7 @@ fun HelpSupportBottomSheet(
             HelpSection(
                 title = "Getting Started",
                 iconRes = R.drawable.rounded_qr_code_scanner_24,
-                content = "To connect your Mac, ensure both devices are on the same Wi-Fi network or with Extended networking on tailscale or similar network. Scan the QR code in AirSync for Mac.",
+                content = "To connect your Mac, ensure both devices are on the same Wi-Fi network or hotspot. Scan the QR code in AirSync for Mac.",
                 links = listOf("Manual Auth Info" to "https://airsync.notion.site")
             ),
             HelpSection(

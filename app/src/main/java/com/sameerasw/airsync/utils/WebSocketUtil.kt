@@ -471,18 +471,8 @@ object WebSocketUtil {
     }
 
     private suspend fun isLocalNetwork(context: Context, ipAddress: String): Boolean {
-        // Check if expand networking is enabled - if so, allow all IPs
-        val ds = com.sameerasw.airsync.data.local.DataStoreManager(context)
-        val expandNetworkingEnabled = ds.getExpandNetworkingEnabled().first()
-        if (expandNetworkingEnabled) {
-            return true
-        }
-
-        // Check standard private IP ranges (RFC 1918) and Carrier-Grade NAT (Tailscale/VPNs)
-        if (ipAddress.startsWith("192.168.") || ipAddress.startsWith("10.") || ipAddress.startsWith(
-                "100."
-            )
-        ) {
+        // Check standard private IP ranges (RFC 1918)
+        if (ipAddress.startsWith("192.168.") || ipAddress.startsWith("10.")) {
             return true
         }
         // Check 172.16.0.0 to 172.31.255.255 range
@@ -808,7 +798,7 @@ object WebSocketUtil {
                             val ips = discoveryMatch.ips.joinToString(",")
                             val port = targetConnection.port.toIntOrNull() ?: 6996
 
-                            Log.d(TAG, "Discovery-triggered reconnect for: ${discoveryMatch.name} to $ips:$port (strategy: ${networkStatus.networkType})")
+                            Log.d(TAG, "Discovery-triggered reconnect for: ${discoveryMatch.name} to $ips:$port (connected: ${networkStatus.isConnected})")
                             connect(
                                 context = context,
                                 ipAddress = ips,

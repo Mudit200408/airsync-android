@@ -113,10 +113,6 @@ interface AirSyncRepository {
     suspend fun setEssentialsConnectionEnabled(enabled: Boolean)
     fun getEssentialsConnectionEnabled(): Flow<Boolean>
 
-    // Expanded Networking
-    suspend fun setExpandNetworkingEnabled(enabled: Boolean)
-    fun getExpandNetworkingEnabled(): Flow<Boolean>
-
     // Device discovery
     suspend fun setDeviceDiscoveryEnabled(enabled: Boolean)
     fun getDeviceDiscoveryEnabled(): Flow<Boolean>

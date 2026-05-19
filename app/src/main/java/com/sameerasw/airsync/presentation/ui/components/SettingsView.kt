@@ -43,7 +43,6 @@ import com.sameerasw.airsync.presentation.ui.components.cards.ClipboardFeaturesC
 import com.sameerasw.airsync.presentation.ui.components.cards.DefaultTabCard
 import com.sameerasw.airsync.presentation.ui.components.cards.DeveloperModeCard
 import com.sameerasw.airsync.presentation.ui.components.cards.DeviceInfoCard
-import com.sameerasw.airsync.presentation.ui.components.cards.ExpandNetworkingCard
 import com.sameerasw.airsync.presentation.ui.components.cards.MediaSyncCard
 import com.sameerasw.airsync.presentation.ui.components.cards.NotificationSyncCard
 import com.sameerasw.airsync.presentation.ui.components.cards.PermissionsCard
@@ -361,8 +360,6 @@ fun SettingsView(
                     localIp = deviceInfo.localIp,
                     onDeviceNameChange = { viewModel.updateDeviceName(it) }
                 )
-
-                ExpandNetworkingCard(context)
             }
         }
 
