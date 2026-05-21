@@ -30,3 +30,8 @@
 
 # Data Layer
 -keep class com.sameerasw.airsync.data.** { *; }
+
+# Suppress warnings for missing classes detected by R8
+-dontwarn java.lang.management.ManagementFactory
+-dontwarn java.lang.management.RuntimeMXBean
+-dontwarn org.slf4j.impl.StaticLoggerBinder
