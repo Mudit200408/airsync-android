@@ -667,6 +667,26 @@ object WebSocketUtil {
      */
     fun disconnect(context: Context? = null, isManual: Boolean = true) {
         Log.d(TAG, "Disconnecting WebSocket (isManual=$isManual)")
+
+        // Send disconnectRequest BEFORE resetting state flags.
+        // isManualDisconnectPending.compareAndSet(false, true) returns true only when
+        // we are the initiator — prevents echoing the signal back when responding to
+        // a disconnectRequest that Mac already sent us.
+        if (isManual && isManualDisconnectPending.compareAndSet(false, true)) {
+            val ws = webSocket
+            if (ws != null) {
+                try {
+                    ws.send("{\"type\":\"disconnectRequest\",\"data\":{}}")
+                    Thread.sleep(150)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error sending manual disconnect over WebSocket: ${e.message}")
+                }
+            }
+        } else if (isManual) {
+            // Flag was already set (we are responding to Mac's disconnectRequest) — no echo needed
+            isManualDisconnectPending.set(true)
+        }
+
         updateConnectedStatus(false)
         isConnecting.set(false)
         isSocketOpen.set(false)
@@ -677,19 +697,7 @@ object WebSocketUtil {
 
         val ctx = context ?: appContext
 
-        // Set manual disconnect flag if applicable
         if (isManual) {
-            isManualDisconnectPending.set(true)
-            
-            if (isSocketOpen.get() && webSocket != null) {
-                try {
-                    sendMessage("{\"type\":\"disconnectRequest\",\"data\":{}}")
-                    Thread.sleep(150)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error sending manual disconnect over WebSocket: ${e.message}")
-                }
-            }
-
             ctx?.let { c ->
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
@@ -699,14 +707,14 @@ object WebSocketUtil {
                     }
                 }
             }
-            
+
             // Send manual disconnect signal over BLE before disconnecting BLE client
             try {
                 val ble = com.sameerasw.airsync.AirSyncApp.getBleConnectionManager()
                 if (ble != null && ble.isAuthenticated) {
                     Log.d(TAG, "Sending manual disconnect signal over BLE before disconnecting")
                     ble.sendChunkedNotification(BleConstants.CHAR_MAC_CONTROL, "remote|manual_disconnect")
-                    
+
                     CoroutineScope(Dispatchers.IO).launch {
                         delay(300)
                         ble.disconnectAllConnectedDevices()
