@@ -20,10 +20,11 @@ object WakeupHandler {
         context: Context,
         macIp: String,
         macPort: Int,
-        macName: String
+        macName: String,
+        manual: Boolean = false
     ) {
         try {
-            Log.i(TAG, "Processing wake-up request from $macName at $macIp:$macPort")
+            Log.i(TAG, "Processing wake-up request from $macName at $macIp:$macPort (manual=$manual)")
 
             if (macIp.isEmpty()) {
                 Log.w(TAG, "Wake-up request missing Mac IP address")
@@ -37,8 +38,19 @@ object WakeupHandler {
                 return
             }
 
-            // Clear manual disconnect flag since this is an external wake-up request
-            dataStoreManager.setUserManuallyDisconnected(false)
+            if (manual) {
+                // User explicitly pressed Connect — clear the manual disconnect state
+                // so the reconnection is allowed to proceed.
+                dataStoreManager.setUserManuallyDisconnected(false)
+                WebSocketUtil.isManualDisconnectPending.set(false)
+                Log.d(TAG, "Manual wake-up: cleared manual disconnect state")
+            } else {
+                val manuallyDisconnected = dataStoreManager.getUserManuallyDisconnected().first()
+                if (manuallyDisconnected || WebSocketUtil.isManualDisconnectPending.get()) {
+                    Log.d(TAG, "Ignoring wake-up request because user manually disconnected")
+                    return
+                }
+            }
 
             // Look up stored encryption key
             val encryptionKey =

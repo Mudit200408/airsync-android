@@ -680,6 +680,16 @@ object WebSocketUtil {
         // Set manual disconnect flag if applicable
         if (isManual) {
             isManualDisconnectPending.set(true)
+            
+            if (isSocketOpen.get() && webSocket != null) {
+                try {
+                    sendMessage("{\"type\":\"disconnectRequest\",\"data\":{}}")
+                    Thread.sleep(150)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error sending manual disconnect over WebSocket: ${e.message}")
+                }
+            }
+
             ctx?.let { c ->
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
