@@ -147,26 +147,9 @@ class AirSyncService : Service() {
         Log.d(TAG, "Starting AirSync foreground service (connected)")
         isScanning = false
         startForeground(NOTIFICATION_ID, buildNotification())
-
-        val dataStoreManager =
-            com.sameerasw.airsync.data.local.DataStoreManager.getInstance(applicationContext)
-
-        // Keep discovery manager running for wake-ups even when connected
-        // But stay in Passive mode mostly
-        UDPDiscoveryManager.start(this, true) // Start with default true
-        UDPDiscoveryManager.setDiscoveryMode(this, DiscoveryMode.PASSIVE)
-        
-        // Update asynchronously
-        scope.launch {
-            try {
-                val isDiscoveryEnabled = dataStoreManager.getDeviceDiscoveryEnabled().first()
-                if (!isDiscoveryEnabled) {
-                    UDPDiscoveryManager.setDiscoveryEnabled(this@AirSyncService, false)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to read discovery preference", e)
-            }
-        }
+        // Once a connection is established, stop UDP discovery entirely.
+        // The HTTP wake-up server stays alive separately for explicit reconnect flows.
+        UDPDiscoveryManager.stop(this)
 
         startHttpServer()
     }
@@ -198,11 +181,15 @@ class AirSyncService : Service() {
                         else -> "Other/Cellular"
                     }
                     Log.d(TAG, "Network available: $networkType, triggering discovery")
-                    // Burst broadcast to announce presence
-                    UDPDiscoveryManager.burstBroadcast(applicationContext)
-                    
-                    // Trigger auto-reconnect for any known peers
-                    WebSocketUtil.requestAutoReconnect(applicationContext)
+                    if (!WebSocketUtil.isConnected() && !WebSocketUtil.isConnecting()) {
+                        // Burst broadcast to announce presence only while disconnected.
+                        UDPDiscoveryManager.burstBroadcast(applicationContext)
+
+                        // Trigger auto-reconnect for any known peers.
+                        WebSocketUtil.requestAutoReconnect(applicationContext)
+                    } else {
+                        Log.d(TAG, "Already connected or connecting, skipping discovery/reconnect trigger")
+                    }
                 }
                 
                 override fun onLost(network: Network) {
