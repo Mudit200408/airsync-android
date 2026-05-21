@@ -474,16 +474,22 @@ object WebSocketUtil {
                                     onConnectionStatusChanged?.invoke(false)
                                     notifyConnectionStatusListeners(false)
                                     // Check manual disconnect flag before auto-reconnecting on failure
-                                    CoroutineScope(Dispatchers.IO).launch {
-                                        try {
-                                            val ds = com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
-                                            val manual = ds.getUserManuallyDisconnected().first()
-                                            if (!manual) {
-                                                tryStartAutoReconnect(context)
+                                    if (!isManualDisconnectPending.get()) {
+                                        CoroutineScope(Dispatchers.IO).launch {
+                                            try {
+                                                val ds = com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
+                                                val manual = ds.getUserManuallyDisconnected().first()
+                                                if (!manual && !isManualDisconnectPending.get()) {
+                                                    tryStartAutoReconnect(context)
+                                                }
+                                            } catch (_: Exception) {
+                                                if (!isManualDisconnectPending.get()) {
+                                                    tryStartAutoReconnect(context)
+                                                }
                                             }
-                                        } catch (_: Exception) {
-                                            tryStartAutoReconnect(context)
                                         }
+                                    } else {
+                                        Log.d(TAG, "Skipping auto-reconnect after failure because manual disconnect is pending")
                                     }
 
                                     try {
@@ -888,7 +894,7 @@ object WebSocketUtil {
                 val manual = ds.getUserManuallyDisconnected().first()
                 val autoEnabled = ds.getAutoReconnectEnabled().first()
 
-                if (manual || !autoEnabled) {
+                if (manual || isManualDisconnectPending.get() || !autoEnabled) {
                     // Suppress starting auto-reconnect if manually disconnected or disabled
                     return@launch
                 }

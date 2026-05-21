@@ -8,6 +8,7 @@ import com.sameerasw.airsync.utils.WebSocketUtil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.runBlocking
 
 /**
  * Receives notification actions and updates sync/connection state and notifications.
@@ -42,6 +43,13 @@ class NotificationActionReceiver : BroadcastReceiver() {
 
             AirSyncService.ACTION_DISCONNECT -> {
                 Log.d(TAG, "Disconnecting from notification")
+                try {
+                    runBlocking {
+                        com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
+                            .setUserManuallyDisconnected(true)
+                    }
+                } catch (_: Exception) {
+                }
                 WebSocketUtil.disconnect(context)
             }
 

@@ -130,13 +130,6 @@ class AirSyncViewModel(
     }
 
     init {
-        // Clear manual disconnect flag on app startup so auto-reconnect works
-        viewModelScope.launch {
-            try {
-                repository.setUserManuallyDisconnected(false)
-            } catch (_: Exception) {}
-        }
-        
         // Register for WebSocket connection status updates
         WebSocketUtil.registerConnectionStatusListener(connectionStatusListener)
         try {
