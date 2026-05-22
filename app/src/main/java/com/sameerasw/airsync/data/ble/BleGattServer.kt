@@ -274,6 +274,7 @@ class BleGattServer(private val context: Context) {
                 Log.d(TAG, "Device connected: ${device.address}")
                 connectedDevices.add(device)
                 _connectionState.value = BleConnectionState.CONNECTED
+                stopAdvertising()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d(TAG, "Device disconnected: ${device.address}")
                 connectedDevices.remove(device)
