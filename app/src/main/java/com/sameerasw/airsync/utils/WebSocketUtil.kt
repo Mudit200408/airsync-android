@@ -556,7 +556,8 @@ object WebSocketUtil {
     fun sendMessage(message: String): Boolean {
         // Allow sending as soon as the socket is open (even before handshake completes)
         if (isSocketOpen.get() && webSocket != null) {
-            Log.d(TAG, "Sending message via WebSocket: $message")
+            val logMsg = if (message.length > 250) message.substring(0, 250) + "... (truncated, total: ${message.length})" else message
+            Log.d(TAG, "Sending message via WebSocket: $logMsg")
             val messageToSend = currentSymmetricKey?.let { key ->
                 CryptoUtil.encryptMessage(message, key)
             } ?: message
@@ -566,7 +567,8 @@ object WebSocketUtil {
             // Fallback to BLE if authenticated
             val ble = com.sameerasw.airsync.AirSyncApp.getBleConnectionManager()
             if (ble != null && ble.isAuthenticated) {
-                Log.d(TAG, "WebSocket not connected, falling back to BLE: $message")
+                val logMsg = if (message.length > 250) message.substring(0, 250) + "... (truncated, total: ${message.length})" else message
+                Log.d(TAG, "WebSocket not connected, falling back to BLE: $logMsg")
                 return sendOverBLE(message)
             }
             

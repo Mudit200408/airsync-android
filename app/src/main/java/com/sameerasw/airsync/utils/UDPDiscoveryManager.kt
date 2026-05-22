@@ -298,8 +298,9 @@ object UDPDiscoveryManager {
                         val macIp = data.optString("macIP", data.optString("macIp", ""))
                         val macPort = data.optInt("macPort", 6996)
                         val macName = data.optString("macName", "Mac")
+                        val isManual = data.optBoolean("isManual", false)
 
-                        WakeupHandler.processWakeupRequest(context, macIp, macPort, macName)
+                        WakeupHandler.processWakeupRequest(context, macIp, macPort, macName, isManual)
                     }
 
                     "peerExchange" -> {

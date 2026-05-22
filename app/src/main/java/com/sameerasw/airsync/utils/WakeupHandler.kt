@@ -20,7 +20,8 @@ object WakeupHandler {
         context: Context,
         macIp: String,
         macPort: Int,
-        macName: String
+        macName: String,
+        isManual: Boolean = false
     ) {
         try {
             Log.i(TAG, "Processing wake-up request from $macName at $macIp:$macPort")
@@ -32,14 +33,14 @@ object WakeupHandler {
 
             val dataStoreManager = DataStoreManager.getInstance(context)
 
-            if (WebSocketUtil.isConnected()) {
-                Log.d(TAG, "Already connected, ignoring wake-up request")
+            if (WebSocketUtil.isConnected() || WebSocketUtil.isConnecting()) {
+                Log.d(TAG, "Already connected or connecting, ignoring wake-up request")
                 return
             }
 
             // Check if the user previously manually disconnected
             val isManuallyDisconnected = dataStoreManager.getUserManuallyDisconnected().first() || WebSocketUtil.isManualDisconnectPending.get()
-            if (isManuallyDisconnected) {
+            if (isManuallyDisconnected && !isManual) {
                 Log.d(TAG, "Ignoring wake-up request because user manually disconnected")
                 return
             }

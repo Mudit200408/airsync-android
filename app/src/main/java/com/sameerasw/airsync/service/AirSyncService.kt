@@ -408,16 +408,19 @@ class AirSyncService : Service() {
                             val macIp: String
                             val macPort: Int
                             val macName: String
+                            val isManual: Boolean
 
                             if (jsonRequest.has("data")) {
                                 val data = jsonRequest.getJSONObject("data")
                                 macIp = data.optString("macIP", "")
                                 macPort = data.optInt("macPort", 6996)
                                 macName = data.optString("macName", "Mac")
+                                isManual = data.optBoolean("isManual", false)
                             } else {
                                 macIp = jsonRequest.optString("macIp", "")
                                 macPort = jsonRequest.optInt("macPort", 6996)
                                 macName = jsonRequest.optString("macName", "Mac")
+                                isManual = jsonRequest.optBoolean("isManual", false)
                             }
 
                             val response =
@@ -428,7 +431,8 @@ class AirSyncService : Service() {
                                 this@AirSyncService,
                                 macIp,
                                 macPort,
-                                macName
+                                macName,
+                                isManual
                             )
                         } catch (e: Exception) {
                             Log.e(TAG, "Error parsing wake-up request", e)
