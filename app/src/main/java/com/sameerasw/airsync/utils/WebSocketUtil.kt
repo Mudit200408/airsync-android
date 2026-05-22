@@ -76,13 +76,52 @@ object WebSocketUtil {
     private val lastActivityTime = java.util.concurrent.atomic.AtomicLong(0L)
     private var watchdogJob: Job? = null
 
-    private fun createClient(): OkHttpClient {
-        return OkHttpClient.Builder()
+    private fun createClient(context: Context): OkHttpClient {
+        val builder = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .writeTimeout(10, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.SECONDS) // Keep connection alive
             .pingInterval(10, TimeUnit.SECONDS) // Auto ping every 10 seconds to detect dead connection
-            .build()
+
+        try {
+            val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+            if (cm != null) {
+                val networks = cm.allNetworks
+                var targetNetwork: android.net.Network? = null
+                
+                for (net in networks) {
+                    val caps = cm.getNetworkCapabilities(net) ?: continue
+                    if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)) {
+                        targetNetwork = net
+                        break
+                    } else if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) {
+                        targetNetwork = net
+                    }
+                }
+                
+                if (targetNetwork == null) {
+                    val activeNet = cm.activeNetwork
+                    if (activeNet != null) {
+                        val caps = cm.getNetworkCapabilities(activeNet)
+                        if (caps != null && (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+                                    caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN))) {
+                            targetNetwork = activeNet
+                        }
+                    }
+                }
+                
+                if (targetNetwork != null) {
+                    builder.socketFactory(targetNetwork.socketFactory)
+                    Log.d(TAG, "Bound OkHttpClient to network socket factory: $targetNetwork")
+                } else {
+                    Log.d(TAG, "No Wi-Fi or VPN network found to bind socket factory")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error binding OkHttpClient to specific network", e)
+        }
+
+        return builder.build()
     }
 
     // Manual connect listeners are invoked when a user-initiated connection starts (not auto reconnect)
@@ -200,9 +239,8 @@ object WebSocketUtil {
             onMessageReceived = onMessage
 
             try {
-                if (client == null) {
-                    client = createClient()
-                }
+                // Recreate OkHttpClient on every connection attempt to query and bind to the latest Wi-Fi/VPN network
+                client = createClient(context)
 
                 connectionAttemptJob?.cancel()
                 connectionStarted.set(false)
