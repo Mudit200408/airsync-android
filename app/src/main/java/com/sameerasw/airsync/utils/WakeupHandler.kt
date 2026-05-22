@@ -37,6 +37,13 @@ object WakeupHandler {
                 return
             }
 
+            // Check if the user previously manually disconnected
+            val isManuallyDisconnected = dataStoreManager.getUserManuallyDisconnected().first() || WebSocketUtil.isManualDisconnectPending.get()
+            if (isManuallyDisconnected) {
+                Log.d(TAG, "Ignoring wake-up request because user manually disconnected")
+                return
+            }
+
             // Clear manual disconnect flag since this is an external wake-up request
             dataStoreManager.setUserManuallyDisconnected(false)
 

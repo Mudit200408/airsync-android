@@ -192,22 +192,8 @@ class AirSyncService : Service() {
 
         val dataStoreManager = DataStoreManager.getInstance(applicationContext)
 
-        // Keep discovery manager running for wake-ups even when connected
-        // But stay in Passive mode mostly
-        UDPDiscoveryManager.start(this, true) // Start with default true
-        UDPDiscoveryManager.setDiscoveryMode(this, DiscoveryMode.PASSIVE)
-        
-        // Update asynchronously
-        scope.launch {
-            try {
-                val isDiscoveryEnabled = dataStoreManager.getDeviceDiscoveryEnabled().first()
-                if (!isDiscoveryEnabled) {
-                    UDPDiscoveryManager.setDiscoveryEnabled(this@AirSyncService, false)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to read discovery preference", e)
-            }
-        }
+        // Stop discovery completely while connected — it restarts in ACTIVE mode when startScanning() is called
+        UDPDiscoveryManager.stop(this)
 
         monitorWebDavRequirements()
         startHttpServer()

@@ -43,6 +43,7 @@ class BleGattServer(private val context: Context) {
     private val connectedDevices = mutableSetOf<BluetoothDevice>()
     private val characteristicQueues = mutableMapOf<UUID, ConcurrentLinkedQueue<ByteArray>>()
     private val isSending = mutableMapOf<UUID, Boolean>()
+    private val preparedWrites = java.util.concurrent.ConcurrentHashMap<String, java.io.ByteArrayOutputStream>()
 
     var isAuthenticated = false
         private set
@@ -249,7 +250,6 @@ class BleGattServer(private val context: Context) {
     fun resumeAdvertising() {
         if (!isAdvertisingPaused) return
         if (gattServer == null) return
-        if (_connectionState.value == BleConnectionState.DISCONNECTED) return
         Log.d(TAG, "BLE advertising resumed")
         isAdvertisingPaused = false
         startAdvertising()
@@ -316,12 +316,22 @@ class BleGattServer(private val context: Context) {
         private val chunkBuffers = mutableMapOf<UUID, MutableMap<Int, ByteArray>>()
 
         override fun onCharacteristicWriteRequest(device: BluetoothDevice, requestId: Int, characteristic: BluetoothGattCharacteristic, preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray) {
-            Log.d(TAG, "Write request for ${characteristic.uuid}, length: ${value.size}")
+            Log.d(TAG, "Write request for characteristic=${characteristic.uuid}, fromDevice=${device.address}, requestId=$requestId, preparedWrite=$preparedWrite, responseNeeded=$responseNeeded, offset=$offset, valueLength=${value.size}")
             
             if (characteristic.uuid != BleConstants.CHAR_AUTH_TOKEN && !isAuthenticated) {
                 Log.w(TAG, "Blocked unauthorized write request to ${characteristic.uuid} from ${device.address}")
                 if (responseNeeded) {
                     gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_WRITE_NOT_PERMITTED, offset, null)
+                }
+                return
+            }
+
+            if (preparedWrite) {
+                val key = "${device.address}_${characteristic.uuid}"
+                val bos = preparedWrites.getOrPut(key) { java.io.ByteArrayOutputStream() }
+                bos.write(value)
+                if (responseNeeded) {
+                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
                 }
                 return
             }
@@ -386,22 +396,77 @@ class BleGattServer(private val context: Context) {
             // This is crucial for sequential chunk sending
             processNextInQueues()
         }
+
+        override fun onExecuteWrite(device: BluetoothDevice, requestId: Int, execute: Boolean) {
+            Log.d(TAG, "onExecuteWrite: device=${device.address}, requestId=$requestId, execute=$execute")
+            if (execute) {
+                val keys = preparedWrites.keys().toList()
+                for (key in keys) {
+                    if (key.startsWith(device.address)) {
+                        val bos = preparedWrites.remove(key) ?: continue
+                        val value = bos.toByteArray()
+                        val uuidStr = key.substring(device.address.length + 1)
+                        val uuid = UUID.fromString(uuidStr)
+                        val characteristic = findCharacteristic(uuid)
+                        if (characteristic != null) {
+                            Log.d(TAG, "Executing prepared write for characteristic=$uuid, valueLength=${value.size}")
+                            scope.launch {
+                                when (uuid) {
+                                    BleConstants.CHAR_AUTH_TOKEN -> handleAuthRequest(device, value)
+                                    BleConstants.CHAR_MAC_BATTERY -> handleMacBattery(value)
+                                    BleConstants.CHAR_NOTIFICATION_ACTION -> handleChunkedWrite(uuid, value) { handleNotificationAction(it.toByteArray(Charsets.UTF_8)) }
+                                    BleConstants.CHAR_MEDIA_CONTROL -> handleChunkedWrite(uuid, value) { handleMediaControl(it.toByteArray(Charsets.UTF_8)) }
+                                    BleConstants.CHAR_MAC_MEDIA_STATE -> handleChunkedWrite(uuid, value) { handleMacMediaState(it) }
+                                    BleConstants.CHAR_CLIPBOARD_DATA_WRITE -> handleChunkedWrite(uuid, value) {
+                                        Log.d(TAG, "Received clipboard from Mac via BLE: ${it.take(50)}")
+                                        ClipboardSyncManager.handleClipboardUpdate(context, it)
+                                    }
+                                    BleConstants.CHAR_DEVICE_NAME -> handleChunkedWrite(uuid, value) { 
+                                        Log.d(TAG, "Received Mac Device Name: $it")
+                                        MacDeviceStatusManager.updateMacStatus(context, name = it)
+                                    }
+                                    BleConstants.CHAR_NOTIFICATION_DISMISS -> handleChunkedWrite(uuid, value) { handleNotificationDismiss(it) }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                val keys = preparedWrites.keys().toList()
+                for (key in keys) {
+                    if (key.startsWith(device.address)) {
+                        preparedWrites.remove(key)
+                    }
+                }
+            }
+            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+        }
     }
 
     private fun handleAuthRequest(device: BluetoothDevice, token: ByteArray) {
         scope.launch {
             val deviceData = dataStoreManager.getLastConnectedDevice().first()
             val storedKey = deviceData?.symmetricKey
-            Log.d(TAG, "Handling auth request from ${device.address}. Device in DB: ${deviceData?.name}, hasKey: ${storedKey != null}")
+            Log.d(TAG, "Handling auth request from ${device.address}. DB device details: name=${deviceData?.name}, ip=${deviceData?.ipAddress}, port=${deviceData?.port}, storedKeyExists=${storedKey != null}")
             
             if (storedKey != null) {
+                Log.d(TAG, "Stored symmetric key found: $storedKey")
                 val expectedToken = BleTransportBridge.deriveAuthToken(storedKey)
                 val receivedTokenStr = String(token, Charsets.UTF_8)
                 
-                Log.d(TAG, "Expected token: $expectedToken")
-                Log.d(TAG, "Received token: $receivedTokenStr")
+                val expectedTokenBytes = expectedToken.toByteArray(Charsets.UTF_8)
+                val expectedTokenBase64 = android.util.Base64.encodeToString(expectedTokenBytes, android.util.Base64.NO_WRAP)
+                val receivedTokenBase64 = android.util.Base64.encodeToString(token, android.util.Base64.NO_WRAP)
+                
+                Log.d(TAG, "Expected token string: '$expectedToken'")
+                Log.d(TAG, "Expected token base64: $expectedTokenBase64")
+                Log.d(TAG, "Received token string: '$receivedTokenStr'")
+                Log.d(TAG, "Received token base64: $receivedTokenBase64")
+                
+                val isMatch = token.contentEquals(expectedTokenBytes)
+                Log.d(TAG, "Performing byte-by-byte authentication token comparison. Match result: $isMatch")
 
-                if (token.contentEquals(expectedToken.toByteArray(Charsets.UTF_8))) {
+                if (isMatch) {
                     Log.i(TAG, "BLE Auth Success!")
                     isAuthenticated = true
                     _connectionState.value = BleConnectionState.AUTHENTICATED
@@ -409,7 +474,7 @@ class BleGattServer(private val context: Context) {
                     BleTransportBridge.sendDeviceName()
                     startHeartbeat()
                 } else {
-                    Log.w(TAG, "BLE Auth Failed! Token mismatch.")
+                    Log.w(TAG, "BLE Auth Failed! Token mismatch (byte-level mismatch).")
                     sendNotification(BleConstants.CHAR_AUTH_RESULT, byteArrayOf(BleConstants.AUTH_FAILED))
                 }
             } else {

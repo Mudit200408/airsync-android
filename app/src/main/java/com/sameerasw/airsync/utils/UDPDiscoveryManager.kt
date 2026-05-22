@@ -185,6 +185,8 @@ object UDPDiscoveryManager {
         broadcastJob?.cancel()
         pruningJob?.cancel()
         burstJob?.cancel()
+        peerExchangeJob?.cancel()
+        peerExchangeJob = null
 
         releaseMulticastLock()
         try {
@@ -273,7 +275,7 @@ object UDPDiscoveryManager {
                                 if (macIp != null) {
                                     // Already in an IO coroutine, no need to launch another one for unicast
                                     sendPresenceUnicast(context, macIp)
-                                    if (!WebSocketUtil.isConnected() && !WebSocketUtil.isConnecting()) {
+                                    if (!WebSocketUtil.isConnected() && !WebSocketUtil.isConnecting() && !WebSocketUtil.isManualDisconnectPending.get()) {
                                         WebSocketUtil.requestAutoReconnect(context)
                                     }
                                 }
@@ -774,7 +776,7 @@ object UDPDiscoveryManager {
                     _discoveredDevices.value = active
                 }
 
-                if (active.isNotEmpty() && !WebSocketUtil.isConnected() && !WebSocketUtil.isConnecting()) {
+                if (active.isNotEmpty() && !WebSocketUtil.isConnected() && !WebSocketUtil.isConnecting() && !WebSocketUtil.isManualDisconnectPending.get()) {
                     WebSocketUtil.requestAutoReconnect(context)
                 }
             }

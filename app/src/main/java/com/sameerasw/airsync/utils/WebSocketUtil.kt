@@ -167,8 +167,9 @@ object WebSocketUtil {
             handshakeCompleted.set(false)
 
             // Reset manual disconnect flag on manual attempt
-            isManualDisconnectPending.set(false)
             if (manualAttempt) {
+                Log.d(TAG, "Resetting isManualDisconnectPending to false for manual connection attempt")
+                isManualDisconnectPending.set(false)
                 try {
                     val ds = com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
                     ds.setUserManuallyDisconnected(false)
@@ -323,6 +324,8 @@ object WebSocketUtil {
                                     }
                                     if (handshakeOk) {
                                         handshakeCompleted.set(true)
+                                        Log.d(TAG, "Resetting isManualDisconnectPending to false on successful handshake")
+                                        isManualDisconnectPending.set(false)
                                         try {
                                             AirSyncWidgetProvider.updateAllWidgets(context)
                                         } catch (_: Exception) {
@@ -389,6 +392,7 @@ object WebSocketUtil {
                                 code: Int,
                                 reason: String
                             ) {
+                                Log.d(TAG, "WebSocket onClosing entered: code=$code, reason=$reason, isManualDisconnectPending=${isManualDisconnectPending.get()}")
                                 if (webSocket == WebSocketUtil.webSocket) {
                                     stopWatchdog()
                                     if (code != 1000 && !isManualDisconnectPending.get()) {
@@ -434,6 +438,7 @@ object WebSocketUtil {
                                 t: Throwable,
                                 response: Response?
                             ) {
+                                Log.d(TAG, "WebSocket onFailure entered: message=${t.message}, responseCode=${response?.code}, isManualDisconnectPending=${isManualDisconnectPending.get()}", t)
                                 val totalToTry = ipList.size
                                 val failedCount = failedAttempts.incrementAndGet()
                                 val wasActive = webSocket == WebSocketUtil.webSocket
@@ -477,12 +482,14 @@ object WebSocketUtil {
                                     CoroutineScope(Dispatchers.IO).launch {
                                         try {
                                             val ds = com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
-                                            val manual = ds.getUserManuallyDisconnected().first()
+                                            val manual = ds.getUserManuallyDisconnected().first() || isManualDisconnectPending.get()
                                             if (!manual) {
                                                 tryStartAutoReconnect(context)
                                             }
                                         } catch (_: Exception) {
-                                            tryStartAutoReconnect(context)
+                                            if (!isManualDisconnectPending.get()) {
+                                                tryStartAutoReconnect(context)
+                                            }
                                         }
                                     }
 
@@ -661,18 +668,12 @@ object WebSocketUtil {
      */
     fun disconnect(context: Context? = null, isManual: Boolean = true) {
         Log.d(TAG, "Disconnecting WebSocket (isManual=$isManual)")
-        updateConnectedStatus(false)
-        isConnecting.set(false)
-        isSocketOpen.set(false)
-        handshakeCompleted.set(false)
-        handshakeTimeoutJob?.cancel()
-        stopWatchdog()
-        currentIpAddress = null
 
         val ctx = context ?: appContext
 
         // Set manual disconnect flag if applicable
         if (isManual) {
+            Log.d(TAG, "Setting isManualDisconnectPending to true in disconnect()")
             isManualDisconnectPending.set(true)
             ctx?.let { c ->
                 CoroutineScope(Dispatchers.IO).launch {
@@ -684,6 +685,22 @@ object WebSocketUtil {
                 }
             }
             
+            // Send manual disconnect packet over WebSocket if open
+            if (isSocketOpen.get() && webSocket != null) {
+                try {
+                    val json = org.json.JSONObject().apply {
+                        put("type", "remoteControl")
+                        put("data", org.json.JSONObject().apply {
+                            put("action", "manual_disconnect")
+                        })
+                    }
+                    Log.d(TAG, "Sending manual disconnect signal over WebSocket")
+                    sendMessage(json.toString())
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to send manual disconnect packet: ${e.message}")
+                }
+            }
+
             // Send manual disconnect signal over BLE before disconnecting BLE client
             try {
                 val ble = com.sameerasw.airsync.AirSyncApp.getBleConnectionManager()
@@ -701,8 +718,36 @@ object WebSocketUtil {
             }
         }
 
-        webSocket?.close(1000, "Manual disconnection")
+        updateConnectedStatus(false)
+        isConnecting.set(false)
+        isSocketOpen.set(false)
+        handshakeCompleted.set(false)
+        handshakeTimeoutJob?.cancel()
+        connectionAttemptJob?.cancel()
+        stopWatchdog()
+        currentIpAddress = null
+
+        val wsToClose = webSocket
         webSocket = null
+        if (wsToClose != null) {
+            if (isManual) {
+                CoroutineScope(Dispatchers.IO).launch {
+                    delay(200)
+                    try {
+                        Log.d(TAG, "Closing WebSocket after 200ms delay for manual disconnect")
+                        wsToClose.close(1000, "Manual disconnection")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error closing websocket after delay: ${e.message}")
+                    }
+                }
+            } else {
+                try {
+                    wsToClose.close(1000, "Normal disconnection")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error closing websocket: ${e.message}")
+                }
+            }
+        }
 
         // Transition back to scanning on disconnect
         ctx?.let { c ->
@@ -879,17 +924,24 @@ object WebSocketUtil {
      * Uses a dual strategy: proactive exponential backoff AND discovery-triggered.
      */
     private fun tryStartAutoReconnect(context: Context) {
-        if (autoReconnectActive.get()) return // already running
+        if (autoReconnectActive.get()) {
+            Log.d(TAG, "tryStartAutoReconnect: Auto-reconnect already active, exiting.")
+            return
+        }
 
         // Check manual disconnect / auto-enabled status asynchronously before starting log and job
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val ds = com.sameerasw.airsync.data.local.DataStoreManager.getInstance(context)
-                val manual = ds.getUserManuallyDisconnected().first()
+                val manual = ds.getUserManuallyDisconnected().first() || isManualDisconnectPending.get()
                 val autoEnabled = ds.getAutoReconnectEnabled().first()
 
-                if (manual || !autoEnabled) {
-                    // Suppress starting auto-reconnect if manually disconnected or disabled
+                if (manual) {
+                    Log.d(TAG, "tryStartAutoReconnect: Suppressing auto-reconnect because user manually disconnected (manualStore=$manual, isManualDisconnectPending=${isManualDisconnectPending.get()}).")
+                    return@launch
+                }
+                if (!autoEnabled) {
+                    Log.d(TAG, "tryStartAutoReconnect: Suppressing auto-reconnect because autoReconnectEnabled is false in settings.")
                     return@launch
                 }
 
@@ -908,7 +960,7 @@ object WebSocketUtil {
                             launch {
                                 var backoffMs = 2000L
                                 while (autoReconnectActive.get() && !isConnected.get()) {
-                                    val currentManual = ds.getUserManuallyDisconnected().first()
+                                    val currentManual = ds.getUserManuallyDisconnected().first() || isManualDisconnectPending.get()
                                     val currentAutoEnabled = ds.getAutoReconnectEnabled().first()
 
                                     if (currentManual || !currentAutoEnabled) {
@@ -969,7 +1021,7 @@ object WebSocketUtil {
                             suspend fun tryConnectIfAvailable(discoveredList: List<DiscoveredDevice>) {
                                 if (!autoReconnectActive.get() || isConnected.get() || isConnecting.get()) return
 
-                                val currentManual = ds.getUserManuallyDisconnected().first()
+                                val currentManual = ds.getUserManuallyDisconnected().first() || isManualDisconnectPending.get()
                                 val currentAutoEnabled = ds.getAutoReconnectEnabled().first()
                                 if (currentManual || !currentAutoEnabled) {
                                     cancelAutoReconnect()
