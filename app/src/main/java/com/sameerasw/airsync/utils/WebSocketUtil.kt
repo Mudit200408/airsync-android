@@ -1009,6 +1009,14 @@ object WebSocketUtil {
                                         break
                                     }
 
+                                    val networkStatus = DeviceInfoUtil.getNetworkStatus(context)
+                                    if (!networkStatus.hasWifi && !networkStatus.hasVpn) {
+                                        Log.d(TAG, "Proactive retry skipped: no Wi-Fi or VPN available")
+                                        delay(backoffMs)
+                                        backoffMs = (backoffMs * 2).coerceAtMost(60_000L)
+                                        continue
+                                    }
+
                                     if (!isConnecting.get()) {
                                         val last = ds.getLastConnectedDevice().first()
                                         if (last != null) {

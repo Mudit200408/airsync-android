@@ -222,10 +222,11 @@ class AirSyncService : Service() {
 
             networkCallback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    val networkStatus = com.sameerasw.airsync.utils.DeviceInfoUtil.getNetworkStatus(this@AirSyncService)
+                    val caps = connectivityManager.getNetworkCapabilities(network)
                     val networkType = when {
-                        networkStatus.hasWifi -> "WiFi"
-                        networkStatus.hasVpn -> "VPN/Tailscale"
+                        caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "WiFi"
+                        caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true -> "VPN/Tailscale"
+                        caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "Ethernet"
                         else -> "Other/Cellular"
                     }
                     Log.d(TAG, "Network available: $networkType, triggering discovery")
