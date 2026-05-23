@@ -48,6 +48,11 @@ object WakeupHandler {
             // Clear manual disconnect flag since this is an external wake-up request
             dataStoreManager.setUserManuallyDisconnected(false)
 
+            // Reset in-memory flag so the auto-reconnect loop doesn't block this
+            if (isManual) {
+                WebSocketUtil.isManualDisconnectPending.set(false)
+            }
+
             // Look up stored encryption key
             val encryptionKey =
                 findStoredEncryptionKey(context, dataStoreManager, macIp, macPort, macName)
@@ -86,13 +91,13 @@ object WakeupHandler {
                 dataStoreManager.saveLastConnectedDevice(connectedDevice)
             }
 
-            Log.d(TAG, "Attempting to connect to Mac at $macIp:$macPort")
+            Log.d(TAG, "Attempting to connect to Mac at $macIp:$macPort (isManual=$isManual)")
             WebSocketUtil.connect(
                 context = context,
                 ipAddress = macIp,
                 port = macPort,
                 symmetricKey = encryptionKey,
-                manualAttempt = false, // wakeup is machine-initiated; don't show failure toasts
+                manualAttempt = isManual, // forward manual flag so Mac's "Connect" button overrides guards
                 onConnectionStatus = { connected ->
                     if (connected) {
                         Log.i(TAG, "Successfully connected after wake-up")
