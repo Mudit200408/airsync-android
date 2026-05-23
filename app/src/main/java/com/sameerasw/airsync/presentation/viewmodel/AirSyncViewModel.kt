@@ -812,7 +812,10 @@ class AirSyncViewModel(
                             // Stop service if needed
                             ServiceManager.updateServiceState(context)
                             _uiState.value =
-                                _uiState.value.copy(isConnected = false, isConnecting = false)
+                                _uiState.value.copy(
+                                    isConnected = com.sameerasw.airsync.data.ble.BleGattServer.isAnyAuthenticated(),
+                                    isConnecting = false
+                                )
                             return@collect
                         } else {
                             // Ensure service state is updated
