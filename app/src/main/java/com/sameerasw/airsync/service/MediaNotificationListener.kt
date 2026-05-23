@@ -61,6 +61,19 @@ class MediaNotificationListener : NotificationListenerService() {
             SyncManager.checkAndSyncDeviceStatus(context, forceSync = true)
         }
 
+        fun hasSignificantMediaChange(old: MediaInfo?, new: MediaInfo?): Boolean {
+            if (old == null && new == null) return false
+            if (old == null || new == null) return true
+            return old.isPlaying != new.isPlaying ||
+                   old.title != new.title ||
+                   old.artist != new.artist ||
+                   old.albumArt != new.albumArt ||
+                   old.albumArtLite != new.albumArtLite ||
+                   old.durationMs != new.durationMs ||
+                   old.isBuffering != new.isBuffering ||
+                   old.likeStatus != new.likeStatus
+        }
+
         // In-memory cache of like status per track key
         private val likeStatusCache = LinkedHashMap<String, String>(32, 0.75f, true)
 
@@ -467,7 +480,7 @@ class MediaNotificationListener : NotificationListenerService() {
                 updateMediaInfo()
 
                 // If media info changed, trigger sync
-                if (previousMediaInfo != currentMediaInfo) {
+                if (hasSignificantMediaChange(previousMediaInfo, currentMediaInfo)) {
                     Log.d(TAG, "Media info changed, triggering sync")
                     SyncManager.onMediaStateChanged(this)
                 }
@@ -513,7 +526,7 @@ class MediaNotificationListener : NotificationListenerService() {
             updateMediaInfo()
 
             // If media info changed, trigger sync
-            if (previousMediaInfo != currentMediaInfo) {
+            if (hasSignificantMediaChange(previousMediaInfo, currentMediaInfo)) {
                 Log.d(TAG, "Media info changed after notification removal, triggering sync")
                 SyncManager.onMediaStateChanged(this)
             }
